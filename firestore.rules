@@ -1,0 +1,149 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function uid() {
+      return request.auth.uid;
+    }
+
+    function userPath() {
+      return /databases/$(database)/documents/users/$(uid());
+    }
+
+    function userExists() {
+      return exists(userPath());
+    }
+
+    function userDoc() {
+      return get(userPath()).data;
+    }
+
+    function isMaster() {
+      return isSignedIn() && userExists() && userDoc().role == 'master';
+    }
+
+    // Подписка / trial ещё действует
+    function hasActiveSub() {
+      return isMaster()
+        && ('subscriptionStatus' in userDoc())
+        && (userDoc().subscriptionStatus == 'trial' || userDoc().subscriptionStatus == 'active')
+        && ('subscriptionExpiresAt' in userDoc())
+        && userDoc().subscriptionExpiresAt is timestamp
+        && userDoc().subscriptionExpiresAt > request.time;
+    }
+
+    function listEditors() {
+      return ('editors' in resource.data) ? resource.data.editors : [];
+    }
+
+    function listViewers() {
+      return ('viewers' in resource.data) ? resource.data.viewers : [];
+    }
+
+    // Для list/get запросов — только resource.data (иначе permission-denied на query)
+    function canReadCalResource() {
+      return isSignedIn() && (
+        resource.data.ownerId == uid()
+        || uid() in listEditors()
+        || uid() in listViewers()
+      );
+    }
+
+    function canEditCalById(calId) {
+      let c = get(/databases/$(database)/documents/calendars/$(calId)).data;
+      let eds = ('editors' in c) ? c.editors : [];
+      return isSignedIn() && (c.ownerId == uid() || uid() in eds);
+    }
+
+    function canReadCalById(calId) {
+      let c = get(/databases/$(database)/documents/calendars/$(calId)).data;
+      let eds = ('editors' in c) ? c.editors : [];
+      let vws = ('viewers' in c) ? c.viewers : [];
+      return isSignedIn() && (
+        c.ownerId == uid() || uid() in eds || uid() in vws
+      );
+    }
+
+    match /users/{userId} {
+      allow read: if isSignedIn() && (uid() == userId || isMaster());
+
+      allow create: if isSignedIn()
+        && uid() == userId
+        && request.resource.data.role in ['master', 'client'];
+
+      allow update: if isSignedIn()
+        && uid() == userId
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.subscriptionStatus == resource.data.subscriptionStatus
+        && request.resource.data.subscriptionExpiresAt == resource.data.subscriptionExpiresAt;
+
+      allow delete: if false;
+    }
+
+    match /calendars/{calId} {
+      allow read: if canReadCalResource();
+
+      allow create: if isMaster()
+        && hasActiveSub()
+        && request.resource.data.ownerId == uid();
+
+      allow update: if isSignedIn() && (
+        resource.data.ownerId == uid()
+        || (
+          uid() in listEditors()
+          && !request.resource.data.diff(resource.data).affectedKeys()
+              .hasAny(['ownerId', 'editors', 'viewers', 'pendingEditors', 'pendingViewers'])
+        )
+      );
+
+      allow delete: if isSignedIn() && resource.data.ownerId == uid();
+    }
+
+    match /appointments/{aptId} {
+      allow read: if isSignedIn() && canReadCalById(resource.data.calendarId);
+
+      allow create: if isSignedIn()
+        && canEditCalById(request.resource.data.calendarId);
+
+      allow update, delete: if isSignedIn()
+        && canEditCalById(resource.data.calendarId);
+    }
+
+    match /shares/{shareId} {
+      allow read: if isSignedIn() && (
+        resource.data.fromUid == uid()
+        || (request.auth.token.email != null
+            && resource.data.toEmail == request.auth.token.email)
+        || (request.auth.token.phone_number != null
+            && resource.data.toPhone == request.auth.token.phone_number)
+      );
+
+      allow create: if isSignedIn() && request.resource.data.fromUid == uid();
+
+      allow update: if isSignedIn() && (
+        resource.data.fromUid == uid()
+        || (request.auth.token.email != null
+            && resource.data.toEmail == request.auth.token.email)
+        || (request.auth.token.phone_number != null
+            && resource.data.toPhone == request.auth.token.phone_number)
+      );
+
+      allow delete: if isSignedIn() && resource.data.fromUid == uid();
+    }
+
+    match /fcmTokens/{tokenId} {
+      allow read: if isSignedIn() && resource.data.uid == uid();
+      allow create: if isSignedIn() && request.resource.data.uid == uid();
+      allow update, delete: if isSignedIn() && resource.data.uid == uid();
+    }
+
+    match /payments/{id} {
+      allow read: if isSignedIn() && resource.data.uid == uid();
+      allow write: if false;
+    }
+  }
+}
