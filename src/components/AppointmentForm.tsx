@@ -22,7 +22,7 @@ export type AppointmentFormValues = {
   notes: string;
 };
 
-const HINTS = [15, 30, 45, 60, 90, 120, 180, 240];
+const HINTS = [120, 180, 240, 300, 360, 420, 480];
 
 function pad2(n: number) {
   return String(Math.floor(n)).padStart(2, '0');
