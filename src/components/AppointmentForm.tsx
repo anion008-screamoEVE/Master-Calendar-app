@@ -2,7 +2,6 @@ import { useState } from 'react';
 import type { Appointment, AppointmentStatus } from '../types';
 import { CARD_COLORS, STATUS_LABELS } from '../types';
 import { Field, Input, Select, Textarea, Button, ColorPicker } from './ui';
-import { calcEndTime, durationFromRange } from '../lib/dates';
 import { useAuth } from '../contexts/AuthContext';
 
 export type AppointmentFormValues = {
@@ -23,84 +22,58 @@ export type AppointmentFormValues = {
   notes: string;
 };
 
-/** Подсказки — не лимит */
-const DURATION_HINTS = [120, 180, 240, 300, 360, 480];
+const HINTS = [15, 30, 45, 60, 90, 120, 180, 240];
 
-/** Нормализация ввода времени: 9:5 → 09:05, 930 → 09:30 */
-function normalizeTimeInput(raw: string): string | null {
-  const s = raw.trim().replace('.', ':').replace(',', ':');
+function pad2(n: number) {
+  return String(Math.floor(n)).padStart(2, '0');
+}
+
+function parseTime(raw: string): string | null {
+  const s = String(raw || '')
+    .trim()
+    .replace('.', ':')
+    .replace(',', ':');
   if (!s) return null;
-
-  // HH:mm or H:mm
-  let m = s.match(/^(\d{1,2}):(\d{1,2})(?::\d{1,2})?$/);
+  const m = s.match(/^(\d{1,2}):(\d{1,2})/);
   if (m) {
     const h = Number(m[1]);
     const min = Number(m[2]);
-    if (h >= 0 && h <= 23 && min >= 0 && min <= 59) {
-      return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
-    }
+    if (h >= 0 && h <= 23 && min >= 0 && min <= 59) return pad2(h) + ':' + pad2(min);
     return null;
   }
-
-  // только цифры: 930, 0930, 9
-  const digits = s.replace(/\D/g, '');
-  if (digits.length >= 3 && digits.length <= 4) {
-    const h = Number(digits.slice(0, digits.length - 2));
-    const min = Number(digits.slice(-2));
-    if (h >= 0 && h <= 23 && min >= 0 && min <= 59) {
-      return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
-    }
+  const d = s.replace(/\D/g, '');
+  if (d.length === 3 || d.length === 4) {
+    const h = Number(d.slice(0, d.length - 2));
+    const min = Number(d.slice(-2));
+    if (h >= 0 && h <= 23 && min >= 0 && min <= 59) return pad2(h) + ':' + pad2(min);
   }
-  if (digits.length === 1 || digits.length === 2) {
-    const h = Number(digits);
-    if (h >= 0 && h <= 23) return `${String(h).padStart(2, '0')}:00`;
+  if (d.length === 1 || d.length === 2) {
+    const h = Number(d);
+    if (h >= 0 && h <= 23) return pad2(h) + ':00';
   }
   return null;
 }
 
-function isTimeLike(raw: string): boolean {
-  return normalizeTimeInput(raw) !== null || /^\d{0,2}:?\d{0,2}$/.test(raw.trim());
+function toMin(t: string): number {
+  const p = t.split(':');
+  return (Number(p[0]) || 0) * 60 + (Number(p[1]) || 0);
 }
 
-const defaultValues = (date: string, masterName: string): AppointmentFormValues => ({
-  date,
-  startTime: '10:00',
-  endTime: '11:00',
-  durationMinutes: 60,
-  masterName,
-  clientName: '',
-  clientPhone: '',
-  clientEmail: '',
-  service: '',
-  description: '',
-  status: 'scheduled',
-  price: 0,
-  color: CARD_COLORS[0],
-  location: '',
-  notes: '',
-});
+function fromMin(total: number): string {
+  const x = ((total % 1440) + 1440) % 1440;
+  return pad2(Math.floor(x / 60)) + ':' + pad2(x % 60);
+}
 
-function fromApt(a: Appointment): AppointmentFormValues {
-  const start = a.startTime || '10:00';
-  const duration = a.durationMinutes > 0 ? a.durationMinutes : durationFromRange(start, a.endTime || start);
-  const end = a.endTime || calcEndTime(start, duration || 60);
-  return {
-    date: a.date,
-    startTime: start,
-    endTime: end,
-    durationMinutes: duration || durationFromRange(start, end),
-    masterName: a.masterName,
-    clientName: a.clientName,
-    clientPhone: a.clientPhone,
-    clientEmail: a.clientEmail,
-    service: a.service,
-    description: a.description,
-    status: a.status,
-    price: a.price,
-    color: a.color,
-    location: a.location,
-    notes: a.notes,
-  };
+function addMin(start: string, mins: number): string {
+  return fromMin(toMin(start) + Math.max(0, Math.floor(mins || 0)));
+}
+
+function diffMin(start: string, end: string): number {
+  let a = toMin(start);
+  let b = toMin(end);
+  if (b < a) b += 1440;
+  const d = b - a;
+  return d < 1 ? 1 : d;
 }
 
 interface Props {
@@ -112,10 +85,8 @@ interface Props {
 }
 
 /**
- * Длительность и окончание — независимый свободный ввод.
- * Меняете длительность → пересчитывается окончание.
- * Меняете окончание → пересчитывается длительность.
- * При сохранении используется введённое окончание как есть (не затирается).
+ * v1.0.2 — Длительность и Окончание: ТОЛЬКО type="text" (не select, не time).
+ * Если на сайте всё ещё выпадающий список — задеплоен СТАРЫЙ AppointmentForm.tsx.
  */
 export function AppointmentForm({
   initialDate,
@@ -125,150 +96,146 @@ export function AppointmentForm({
   readOnly,
 }: Props) {
   const { profile } = useAuth();
-  const initial = existing ? fromApt(existing) : defaultValues(initialDate, profile?.displayName || '');
 
-  const [values, setValues] = useState<AppointmentFormValues>(initial);
-  // Строки ввода — без принуждения, пока пользователь печатает
-  const [durationText, setDurationText] = useState(String(initial.durationMinutes));
-  const [startText, setStartText] = useState(initial.startTime);
-  const [endText, setEndText] = useState(initial.endTime);
-  /** Что правили последним — чтобы при blur/save не спорили поля */
-  const [lastEdited, setLastEdited] = useState<'duration' | 'end' | 'start'>('duration');
+  const start0 = existing?.startTime || '10:00';
+  const end0 =
+    existing?.endTime ||
+    addMin(start0, existing?.durationMinutes || 60);
+  const dur0 =
+    existing && existing.durationMinutes > 0
+      ? existing.durationMinutes
+      : diffMin(start0, end0);
+
+  const [date, setDate] = useState(existing?.date || initialDate);
+  const [startText, setStartText] = useState(start0);
+  const [endText, setEndText] = useState(end0);
+  const [durText, setDurText] = useState(String(dur0));
+  const [last, setLast] = useState<'start' | 'end' | 'dur'>('dur');
+
+  const [masterName, setMasterName] = useState(
+    existing?.masterName || profile?.displayName || ''
+  );
+  const [clientName, setClientName] = useState(existing?.clientName || '');
+  const [clientPhone, setClientPhone] = useState(existing?.clientPhone || '');
+  const [clientEmail, setClientEmail] = useState(existing?.clientEmail || '');
+  const [service, setService] = useState(existing?.service || '');
+  const [description, setDescription] = useState(existing?.description || '');
+  const [status, setStatus] = useState<AppointmentStatus>(
+    existing?.status || 'scheduled'
+  );
+  const [price, setPrice] = useState(
+    existing?.price ? String(existing.price) : ''
+  );
+  const [color, setColor] = useState(existing?.color || CARD_COLORS[0]);
+  const [location, setLocation] = useState(existing?.location || '');
+  const [notes, setNotes] = useState(existing?.notes || '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  function setField<K extends keyof AppointmentFormValues>(key: K, v: AppointmentFormValues[K]) {
-    setValues((s) => ({ ...s, [key]: v }));
-  }
-
-  /** Длительность: любое положительное число, без max */
-  function applyDurationFromText(raw: string, syncEnd: boolean) {
-    const cleaned = raw.replace(',', '.').replace(/[^\d.]/g, '');
-    setDurationText(raw);
-    const n = Math.floor(Number(cleaned));
-    if (!Number.isFinite(n) || cleaned === '' || n < 0) {
-      return;
+  function onStart(v: string) {
+    setStartText(v);
+    setLast('start');
+    const s = parseTime(v);
+    if (!s) return;
+    if (last === 'end') {
+      const e = parseTime(endText);
+      if (e) setDurText(String(diffMin(s, e)));
+    } else {
+      const d = Math.floor(Number(durText));
+      if (Number.isFinite(d) && d >= 0) setEndText(addMin(s, d));
     }
-    // 0 допускается в поле при наборе; при save подставим минимум 1 если нужно
-    setValues((s) => {
-      const next = { ...s, durationMinutes: n };
-      if (syncEnd && n >= 0) {
-        const start = normalizeTimeInput(startText) || s.startTime;
-        next.endTime = calcEndTime(start, Math.max(n, 0));
-        setEndText(next.endTime);
-      }
-      return next;
-    });
   }
 
-  function applyStartFromText(raw: string) {
-    setStartText(raw);
-    setLastEdited('start');
-    const norm = normalizeTimeInput(raw);
-    if (!norm) return;
-    setValues((s) => {
-      const next = { ...s, startTime: norm };
-      if (lastEdited === 'end' || endText) {
-        // сохраняем окончание, пересчитываем длительность
-        const end = normalizeTimeInput(endText) || s.endTime;
-        next.endTime = end;
-        next.durationMinutes = durationFromRange(norm, end);
-        setDurationText(String(next.durationMinutes));
-      } else {
-        next.endTime = calcEndTime(norm, s.durationMinutes || 0);
-        setEndText(next.endTime);
-      }
-      return next;
-    });
+  function onEnd(v: string) {
+    setEndText(v);
+    setLast('end');
+    const e = parseTime(v);
+    const s = parseTime(startText);
+    if (e && s) setDurText(String(diffMin(s, e)));
   }
 
-  function applyEndFromText(raw: string) {
-    setEndText(raw);
-    setLastEdited('end');
-    const norm = normalizeTimeInput(raw);
-    if (!norm) return;
-    const start = normalizeTimeInput(startText) || values.startTime;
-    const dur = durationFromRange(start, norm);
-    setValues((s) => ({
-      ...s,
-      startTime: start,
-      endTime: norm,
-      durationMinutes: dur,
-    }));
-    setDurationText(String(dur));
+  function onDur(v: string) {
+    if (v !== '' && !/^\d*$/.test(v)) return;
+    setDurText(v);
+    setLast('dur');
+    const s = parseTime(startText);
+    const d = Math.floor(Number(v));
+    if (s && v !== '' && Number.isFinite(d) && d >= 0) {
+      setEndText(addMin(s, d));
+    }
   }
 
-  function pickDurationHint(m: number) {
-    setLastEdited('duration');
-    setDurationText(String(m));
-    const start = normalizeTimeInput(startText) || values.startTime;
-    const end = calcEndTime(start, m);
-    setEndText(end);
-    setValues((s) => ({
-      ...s,
-      startTime: start,
-      durationMinutes: m,
-      endTime: end,
-    }));
+  function hint(m: number) {
+    setLast('dur');
+    setDurText(String(m));
+    const s = parseTime(startText) || '10:00';
+    setStartText(s);
+    setEndText(addMin(s, m));
   }
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (readOnly) return;
     setError(null);
 
-    const start = normalizeTimeInput(startText);
+    const start = parseTime(startText);
     if (!start) {
-      setError('Укажите время начала, например 10:00 или 9:30');
+      setError('Начало: например 10:00');
       return;
     }
 
-    let end = normalizeTimeInput(endText);
-    let duration = Math.floor(Number(String(durationText).replace(',', '.').replace(/[^\d.]/g, '')));
+    let end = parseTime(endText);
+    let duration = Math.floor(Number(durText));
 
-    // Приоритет: если последним правили окончание — оно главное
-    if (lastEdited === 'end' && end) {
-      duration = durationFromRange(start, end);
-    } else if (lastEdited === 'duration' && Number.isFinite(duration) && duration >= 0) {
-      // длительность главная — окончание из неё (если end не введён валидно, тоже)
-      if (duration === 0) duration = 1;
-      end = calcEndTime(start, duration);
+    if (last === 'end' && end) {
+      duration = diffMin(start, end);
+    } else if (last === 'dur' && Number.isFinite(duration) && duration >= 0) {
+      if (duration < 1) duration = 1;
+      end = addMin(start, duration);
     } else if (end) {
-      duration = durationFromRange(start, end);
+      duration = diffMin(start, end);
     } else if (Number.isFinite(duration) && duration > 0) {
-      end = calcEndTime(start, duration);
+      end = addMin(start, duration);
     } else {
-      setError('Укажите длительность (минуты) или время окончания');
+      setError('Укажите окончание (11:30) или длительность в минутах');
       return;
     }
 
     if (!end) {
-      setError('Укажите время окончания, например 11:45');
+      setError('Окончание: например 11:45');
       return;
     }
     if (!Number.isFinite(duration) || duration < 1) {
-      duration = durationFromRange(start, end);
+      duration = diffMin(start, end);
     }
-
-    if (!values.clientName.trim()) {
+    if (!clientName.trim()) {
       setError('Укажите имя клиента');
       return;
     }
-    if (!values.service.trim()) {
+    if (!service.trim()) {
       setError('Укажите вид услуги');
       return;
     }
 
-    const payload: AppointmentFormValues = {
-      ...values,
-      startTime: start,
-      endTime: end,
-      durationMinutes: duration,
-    };
-
     setSaving(true);
     try {
-      await onSubmit(payload);
+      await onSubmit({
+        date,
+        startTime: start,
+        endTime: end,
+        durationMinutes: duration,
+        masterName,
+        clientName: clientName.trim(),
+        clientPhone,
+        clientEmail,
+        service: service.trim(),
+        description,
+        status,
+        price: Number(String(price).replace(',', '.')) || 0,
+        color,
+        location,
+        notes,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка сохранения');
     } finally {
@@ -277,7 +244,12 @@ export function AppointmentForm({
   }
 
   return (
-    <form onSubmit={handleSubmit}>
+    <form onSubmit={submit}>
+      {/* Маркер версии — если видите этот текст, задеплоена НОВАЯ форма */}
+      <p className="muted" style={{ fontSize: '0.75rem', marginTop: 0, marginBottom: 10 }}>
+        Форма v1.0.2 — длительность и окончание: свободный ввод
+      </p>
+
       {error && (
         <div className="alert alert-error" style={{ marginBottom: 12 }}>
           {error}
@@ -288,87 +260,57 @@ export function AppointmentForm({
         <Field label="Дата">
           <Input
             type="date"
-            value={values.date}
-            onChange={(e) => setField('date', e.target.value)}
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
             disabled={readOnly}
             required
           />
         </Field>
-        <Field label="Начало" hint="ЧЧ:ММ, любой ввод">
+        <Field label="Начало" hint="Введите вручную, напр. 10:00">
           <Input
             type="text"
             inputMode="numeric"
             placeholder="10:00"
             value={startText}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (v === '' || isTimeLike(v) || v.length < startText.length) {
-                applyStartFromText(v);
-              } else if (/^[\d:.\s]*$/.test(v)) {
-                setStartText(v);
-              }
-            }}
+            onChange={(e) => onStart(e.target.value)}
             onBlur={() => {
-              const n = normalizeTimeInput(startText);
-              if (n) {
-                setStartText(n);
-                applyStartFromText(n);
+              const t = parseTime(startText);
+              if (t) {
+                setStartText(t);
+                onStart(t);
               }
             }}
             disabled={readOnly}
             autoComplete="off"
-            required
           />
         </Field>
       </div>
 
+      {/* ВАЖНО: type=text, НЕ select и НЕ type=time */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-        <Field label="Длительность (мин)" hint="Любое число, без ограничений">
+        <Field label="Длительность (мин)" hint="Любое число, без списка">
           <Input
             type="text"
             inputMode="numeric"
-            placeholder="75"
-            value={durationText}
-            onChange={(e) => {
-              const v = e.target.value;
-              // разрешаем любые цифры, пусто, без max
-              if (v === '' || /^\d*$/.test(v)) {
-                setLastEdited('duration');
-                applyDurationFromText(v, true);
-              }
-            }}
-            onBlur={() => {
-              if (durationText === '') return;
-              const n = Math.floor(Number(durationText));
-              if (Number.isFinite(n) && n >= 0) {
-                setLastEdited('duration');
-                applyDurationFromText(String(n), true);
-              }
-            }}
+            placeholder="например 75"
+            value={durText}
+            onChange={(e) => onDur(e.target.value)}
             disabled={readOnly}
             autoComplete="off"
           />
         </Field>
-        <Field label="Окончание" hint="ЧЧ:ММ вручную, без ограничений">
+        <Field label="Окончание" hint="Введите вручную, напр. 13:00">
           <Input
             type="text"
             inputMode="numeric"
-            placeholder="11:45"
+            placeholder="13:00"
             value={endText}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (v === '' || isTimeLike(v) || v.length < endText.length) {
-                applyEndFromText(v);
-              } else if (/^[\d:.\s]*$/.test(v)) {
-                setEndText(v);
-                setLastEdited('end');
-              }
-            }}
+            onChange={(e) => onEnd(e.target.value)}
             onBlur={() => {
-              const n = normalizeTimeInput(endText);
-              if (n) {
-                setEndText(n);
-                applyEndFromText(n);
+              const t = parseTime(endText);
+              if (t) {
+                setEndText(t);
+                onEnd(t);
               }
             }}
             disabled={readOnly}
@@ -378,16 +320,10 @@ export function AppointmentForm({
       </div>
 
       {!readOnly && (
-        <div className="chip-row" style={{ marginBottom: 14, marginTop: -6 }}>
-          {DURATION_HINTS.map((m) => (
-            <button
-              key={m}
-              type="button"
-              className="chip"
-              onClick={() => pickDurationHint(m)}
-              title={`${m} мин`}
-            >
-              {m >= 60 ? `${m / 60} ч` : `${m} м`}
+        <div className="chip-row" style={{ marginBottom: 14, marginTop: -4 }}>
+          {HINTS.map((m) => (
+            <button key={m} type="button" className="chip" onClick={() => hint(m)}>
+              {m >= 60 ? m / 60 + ' ч' : m + ' м'}
             </button>
           ))}
         </div>
@@ -395,8 +331,8 @@ export function AppointmentForm({
 
       <Field label="Клиент">
         <Input
-          value={values.clientName}
-          onChange={(e) => setField('clientName', e.target.value)}
+          value={clientName}
+          onChange={(e) => setClientName(e.target.value)}
           placeholder="Имя клиента"
           disabled={readOnly}
           required
@@ -406,8 +342,8 @@ export function AppointmentForm({
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
         <Field label="Телефон клиента">
           <Input
-            value={values.clientPhone}
-            onChange={(e) => setField('clientPhone', e.target.value)}
+            value={clientPhone}
+            onChange={(e) => setClientPhone(e.target.value)}
             placeholder="+7..."
             disabled={readOnly}
           />
@@ -415,8 +351,8 @@ export function AppointmentForm({
         <Field label="Email клиента">
           <Input
             type="email"
-            value={values.clientEmail}
-            onChange={(e) => setField('clientEmail', e.target.value)}
+            value={clientEmail}
+            onChange={(e) => setClientEmail(e.target.value)}
             placeholder="email@..."
             disabled={readOnly}
           />
@@ -425,16 +361,16 @@ export function AppointmentForm({
 
       <Field label="Мастер">
         <Input
-          value={values.masterName}
-          onChange={(e) => setField('masterName', e.target.value)}
+          value={masterName}
+          onChange={(e) => setMasterName(e.target.value)}
           disabled={readOnly}
         />
       </Field>
 
       <Field label="Вид услуги">
         <Input
-          value={values.service}
-          onChange={(e) => setField('service', e.target.value)}
+          value={service}
+          onChange={(e) => setService(e.target.value)}
           placeholder="Стрижка, маникюр..."
           disabled={readOnly}
           required
@@ -443,9 +379,8 @@ export function AppointmentForm({
 
       <Field label="Описание">
         <Textarea
-          value={values.description}
-          onChange={(e) => setField('description', e.target.value)}
-          placeholder="Детали записи..."
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
           disabled={readOnly}
         />
       </Field>
@@ -453,8 +388,8 @@ export function AppointmentForm({
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
         <Field label="Статус">
           <Select
-            value={values.status}
-            onChange={(e) => setField('status', e.target.value as AppointmentStatus)}
+            value={status}
+            onChange={(e) => setStatus(e.target.value as AppointmentStatus)}
             disabled={readOnly}
           >
             {Object.entries(STATUS_LABELS).map(([k, v]) => (
@@ -468,11 +403,8 @@ export function AppointmentForm({
           <Input
             type="text"
             inputMode="decimal"
-            value={values.price === 0 ? '' : String(values.price)}
-            onChange={(e) => {
-              const v = e.target.value.replace(',', '.').replace(/[^\d.]/g, '');
-              setField('price', v === '' ? 0 : Number(v) || 0);
-            }}
+            value={price}
+            onChange={(e) => setPrice(e.target.value.replace(/[^\d.,]/g, ''))}
             placeholder="0"
             disabled={readOnly}
           />
@@ -481,26 +413,24 @@ export function AppointmentForm({
 
       <Field label="Адрес / место">
         <Input
-          value={values.location}
-          onChange={(e) => setField('location', e.target.value)}
-          placeholder="Студия, кабинет..."
+          value={location}
+          onChange={(e) => setLocation(e.target.value)}
           disabled={readOnly}
         />
       </Field>
 
       <Field label="Внутренние заметки">
         <Textarea
-          value={values.notes}
-          onChange={(e) => setField('notes', e.target.value)}
-          placeholder="Только для мастеров"
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
           disabled={readOnly}
         />
       </Field>
 
       <Field label="Цвет карточки">
         <ColorPicker
-          value={values.color}
-          onChange={(c) => !readOnly && setField('color', c)}
+          value={color}
+          onChange={(c) => !readOnly && setColor(c)}
           colors={CARD_COLORS}
         />
       </Field>
@@ -511,6 +441,7 @@ export function AppointmentForm({
             <Button
               type="button"
               variant="danger"
+              disabled={saving}
               onClick={async () => {
                 if (!confirm('Удалить запись?')) return;
                 setSaving(true);
@@ -520,7 +451,6 @@ export function AppointmentForm({
                   setSaving(false);
                 }
               }}
-              disabled={saving}
             >
               Удалить
             </Button>
