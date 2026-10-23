@@ -28,8 +28,26 @@ import type {
 import { trialDefaults } from './subscription';
 import { combineDateTime } from './dates';
 
-function calcEndTime(...) { ... }
-function durationFromRange(...) { ... }
+function calcEndTime(startTime: string, durationMinutes: number): string {
+  const mins = Math.max(0, Math.floor(Number(durationMinutes) || 0));
+  const parts = String(startTime).split(':');
+  const h = Number(parts[0]) || 0;
+  const m = Number(parts[1]) || 0;
+  const total = ((h % 24) * 60 + (m % 60) + mins) % (24 * 60);
+  const eh = Math.floor(total / 60);
+  const em = total % 60;
+  return String(eh).padStart(2, '0') + ':' + String(em).padStart(2, '0');
+}
+
+function durationFromRange(startTime: string, endTime: string): number {
+  const sp = String(startTime).split(':');
+  const ep = String(endTime).split(':');
+  let start = (Number(sp[0]) || 0) * 60 + (Number(sp[1]) || 0);
+  let end = (Number(ep[0]) || 0) * 60 + (Number(ep[1]) || 0);
+  if (end < start) end += 24 * 60;
+  if (end === start) return 1;
+  return Math.max(0, end - start);
+}
 
 function tsToMs(v: unknown): number {
   if (!v) return 0;
