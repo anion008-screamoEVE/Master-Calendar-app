@@ -26,7 +26,10 @@ import type {
   AppointmentStatus,
 } from '../types';
 import { trialDefaults } from './subscription';
-import { combineDateTime, calcEndTime, durationFromRange } from './dates';
+import { combineDateTime } from './dates';
+
+function calcEndTime(...) { ... }
+function durationFromRange(...) { ... }
 
 function tsToMs(v: unknown): number {
   if (!v) return 0;
