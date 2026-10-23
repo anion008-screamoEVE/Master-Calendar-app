@@ -26,7 +26,6 @@ service cloud.firestore {
       return isSignedIn() && userExists() && userDoc().role == 'master';
     }
 
-    // Подписка / trial ещё действует
     function hasActiveSub() {
       return isMaster()
         && ('subscriptionStatus' in userDoc())
@@ -44,7 +43,14 @@ service cloud.firestore {
       return ('viewers' in resource.data) ? resource.data.viewers : [];
     }
 
-    // Для list/get запросов — только resource.data (иначе permission-denied на query)
+    function authEmail() {
+      return request.auth.token.email;
+    }
+
+    function authPhone() {
+      return request.auth.token.phone_number;
+    }
+
     function canReadCalResource() {
       return isSignedIn() && (
         resource.data.ownerId == uid()
@@ -68,8 +74,40 @@ service cloud.firestore {
       );
     }
 
+    // Invitee may add ONLY their own uid to editors or viewers
+    // if their email/phone is listed in pending* on the calendar
+    function isSelfAcceptShare() {
+      let oldEds = listEditors();
+      let oldVws = listViewers();
+      let newEds = ('editors' in request.resource.data) ? request.resource.data.editors : [];
+      let newVws = ('viewers' in request.resource.data) ? request.resource.data.viewers : [];
+      let pendingE = ('pendingEditors' in resource.data) ? resource.data.pendingEditors : [];
+      let pendingV = ('pendingViewers' in resource.data) ? resource.data.pendingViewers : [];
+      let emailOk = authEmail() != null && (
+        authEmail() in pendingE || authEmail() in pendingV
+        || (userExists() && userDoc().email != null && (
+          userDoc().email in pendingE || userDoc().email in pendingV
+        ))
+      );
+      let phoneOk = authPhone() != null && (
+        authPhone() in pendingE || authPhone() in pendingV
+        || (userExists() && userDoc().phone != null && (
+          userDoc().phone in pendingE || userDoc().phone in pendingV
+        ))
+      );
+      let addedSelfEditor = uid() in newEds && !(uid() in oldEds);
+      let addedSelfViewer = uid() in newVws && !(uid() in oldVws);
+      return isSignedIn()
+        && request.resource.data.ownerId == resource.data.ownerId
+        && (emailOk || phoneOk)
+        && (addedSelfEditor || addedSelfViewer)
+        && !request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny(['ownerId', 'name', 'color', 'isPrimary', 'createdAt']);
+    }
+
     match /users/{userId} {
-      allow read: if isSignedIn() && (uid() == userId || isMaster());
+      // Allow signed-in users to read profiles (needed to resolve share targets by email)
+      allow read: if isSignedIn();
 
       allow create: if isSignedIn()
         && uid() == userId
@@ -98,6 +136,7 @@ service cloud.firestore {
           && !request.resource.data.diff(resource.data).affectedKeys()
               .hasAny(['ownerId', 'editors', 'viewers', 'pendingEditors', 'pendingViewers'])
         )
+        || isSelfAcceptShare()
       );
 
       allow delete: if isSignedIn() && resource.data.ownerId == uid();
@@ -114,22 +153,41 @@ service cloud.firestore {
     }
 
     match /shares/{shareId} {
+      // Recipient must be able to query invites by email / phone / uid
       allow read: if isSignedIn() && (
         resource.data.fromUid == uid()
-        || (request.auth.token.email != null
-            && resource.data.toEmail == request.auth.token.email)
-        || (request.auth.token.phone_number != null
-            && resource.data.toPhone == request.auth.token.phone_number)
+        || resource.data.toUid == uid()
+        || (authEmail() != null && resource.data.toEmail == authEmail())
+        || (authPhone() != null && resource.data.toPhone == authPhone())
+        || (
+          userExists()
+          && userDoc().email != null
+          && resource.data.toEmail == userDoc().email
+        )
+        || (
+          userExists()
+          && userDoc().phone != null
+          && resource.data.toPhone == userDoc().phone
+        )
       );
 
       allow create: if isSignedIn() && request.resource.data.fromUid == uid();
 
       allow update: if isSignedIn() && (
         resource.data.fromUid == uid()
-        || (request.auth.token.email != null
-            && resource.data.toEmail == request.auth.token.email)
-        || (request.auth.token.phone_number != null
-            && resource.data.toPhone == request.auth.token.phone_number)
+        || resource.data.toUid == uid()
+        || (authEmail() != null && resource.data.toEmail == authEmail())
+        || (authPhone() != null && resource.data.toPhone == authPhone())
+        || (
+          userExists()
+          && userDoc().email != null
+          && resource.data.toEmail == userDoc().email
+        )
+        || (
+          userExists()
+          && userDoc().phone != null
+          && resource.data.toPhone == userDoc().phone
+        )
       );
 
       allow delete: if isSignedIn() && resource.data.fromUid == uid();

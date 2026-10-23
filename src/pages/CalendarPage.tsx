@@ -226,10 +226,10 @@ export function CalendarPage() {
           setSheetOpen(false);
           setEditing(null);
         }}
-        title={editing ? (canEdit ? 'Запись' : 'Просмотр') : 'Новая запись'}
+        title={editing ? (canEdit ? 'Запись v1.0.3' : 'Просмотр') : 'Новая запись v1.0.3'}
       >
         <AppointmentForm
-          key={editing?.id || `new-${dayKey}`}
+          key={(editing?.id || 'new') + '-' + dayKey + '-v103'}
           initialDate={dayKey}
           existing={editing}
           onSubmit={handleSave}

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import {
   subscribeCalendarsForUser,
@@ -14,6 +15,7 @@ import { Alert, Button, Empty, Field, Input, Select, Spinner } from '../componen
 export function SharePage() {
   const { firebaseUser, profile, isMaster } = useAuth();
   const [calendars, setCalendars] = useState<Calendar[]>([]);
+  const [allCals, setAllCals] = useState<Calendar[]>([]);
   const [invites, setInvites] = useState<ShareInvite[]>([]);
   const [calId, setCalId] = useState('');
   const [target, setTarget] = useState('');
@@ -21,22 +23,40 @@ export function SharePage() {
   const [permission, setPermission] = useState<'edit' | 'view'>('view');
   const [msg, setMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [inviteError, setInviteError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [actingId, setActingId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!firebaseUser) return;
     return subscribeCalendarsForUser(firebaseUser.uid, (list) => {
-      setCalendars(list.filter((c) => c.ownerId === firebaseUser.uid));
+      setAllCals(list);
+      const owned = list.filter((c) => c.ownerId === firebaseUser.uid);
+      setCalendars(owned);
       setLoading(false);
-      setCalId((prev) => prev || list.find((c) => c.ownerId === firebaseUser.uid)?.id || '');
+      setCalId((prev) => prev || owned[0]?.id || '');
     });
   }, [firebaseUser?.uid]);
 
+  // Listen for pending invites for THIS user (email / phone / uid)
   useEffect(() => {
-    if (!profile) return;
-    return subscribePendingShares(profile.email, profile.phone, setInvites);
-  }, [profile?.email, profile?.phone]);
+    if (!firebaseUser || !profile) return;
+    return subscribePendingShares(
+      {
+        uid: firebaseUser.uid,
+        email: profile.email || firebaseUser.email,
+        phone: profile.phone || firebaseUser.phoneNumber,
+      },
+      setInvites
+    );
+  }, [
+    firebaseUser?.uid,
+    firebaseUser?.email,
+    firebaseUser?.phoneNumber,
+    profile?.email,
+    profile?.phone,
+  ]);
 
   async function sendInvite(e: React.FormEvent) {
     e.preventDefault();
@@ -46,7 +66,7 @@ export function SharePage() {
     const cal = calendars.find((c) => c.id === calId);
     if (!cal) return;
     if (!target.trim()) {
-      setError('Укажите email или телефон');
+      setError('Укажите email или телефон получателя');
       return;
     }
     setSending(true);
@@ -56,10 +76,14 @@ export function SharePage() {
         cal.name,
         firebaseUser.uid,
         profile.displayName,
-        targetType === 'email' ? { email: target.trim().toLowerCase() } : { phone: target.trim() },
+        targetType === 'email'
+          ? { email: target.trim() }
+          : { phone: target.trim() },
         permission
       );
-      setMsg('Приглашение создано');
+      setMsg(
+        'Приглашение создано. Получатель должен открыть «Доступ» → «Принять» (войти тем же email/телефоном).'
+      );
       setTarget('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка');
@@ -68,32 +92,103 @@ export function SharePage() {
     }
   }
 
+  async function onAccept(id: string) {
+    if (!firebaseUser || !profile) return;
+    setInviteError(null);
+    setActingId(id);
+    try {
+      await acceptShare(id, firebaseUser.uid, {
+        email: profile.email || firebaseUser.email,
+        phone: profile.phone || firebaseUser.phoneNumber,
+      });
+      setMsg('Доступ принят. Календарь появится во вкладке «Календарь».');
+    } catch (err) {
+      setInviteError(err instanceof Error ? err.message : 'Не удалось принять');
+    } finally {
+      setActingId(null);
+    }
+  }
+
+  async function onReject(id: string) {
+    setActingId(id);
+    try {
+      await rejectShare(id);
+    } finally {
+      setActingId(null);
+    }
+  }
+
   if (loading) return <Spinner />;
+
+  const sharedWithMe = allCals.filter((c) => c.ownerId !== firebaseUser?.uid);
 
   return (
     <div>
       <h1>Доступ</h1>
-      <p className="muted">Делитесь календарями</p>
+      <p className="muted">
+        Приглашения и совместные календари. Получатель должен войти с тем же email или телефоном,
+        на который отправили приглашение.
+      </p>
 
-      {invites.length > 0 && (
-        <div className="card" style={{ marginBottom: 16 }}>
-          <h3>Вам открыли доступ</h3>
-          {invites.map((inv) => (
+      {msg && <Alert type="success">{msg}</Alert>}
+      {inviteError && <Alert type="error">{inviteError}</Alert>}
+
+      {/* Incoming invites — for Master AND Client */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <h3>Вам открыли доступ</h3>
+        {invites.length === 0 ? (
+          <p className="muted" style={{ margin: 0, fontSize: '0.9rem' }}>
+            Нет входящих приглашений. Если мастер уже отправил share — проверьте, что вы вошли
+            под тем же email/телефоном, и что в Firebase опубликованы новые Rules.
+          </p>
+        ) : (
+          invites.map((inv) => (
             <div key={inv.id} className="list-item" style={{ flexWrap: 'wrap' }}>
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 700 }}>{inv.calendarName}</div>
                 <div className="muted" style={{ fontSize: '0.8rem' }}>
-                  от {inv.fromName} · {inv.permission === 'edit' ? 'редактирование' : 'просмотр'}
+                  от {inv.fromName || 'мастер'} ·{' '}
+                  {inv.permission === 'edit' ? 'редактирование' : 'только просмотр'}
                 </div>
               </div>
               <div className="btn-row" style={{ width: 'auto' }}>
-                <Button size="sm" variant="secondary" onClick={() => rejectShare(inv.id)}>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={actingId === inv.id}
+                  onClick={() => onReject(inv.id)}
+                >
                   Отклонить
                 </Button>
-                <Button size="sm" onClick={() => firebaseUser && acceptShare(inv.id, firebaseUser.uid)}>
-                  Принять
+                <Button
+                  size="sm"
+                  disabled={actingId === inv.id}
+                  onClick={() => onAccept(inv.id)}
+                >
+                  {actingId === inv.id ? '…' : 'Принять'}
                 </Button>
               </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      {sharedWithMe.length > 0 && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <h3>Календари с доступом</h3>
+          {sharedWithMe.map((c) => (
+            <div key={c.id} className="list-item">
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 700 }}>{c.name}</div>
+                <div className="muted" style={{ fontSize: '0.8rem' }}>
+                  {c.editors.includes(firebaseUser!.uid)
+                    ? 'Совместное редактирование'
+                    : 'Только просмотр'}
+                </div>
+              </div>
+              <Link to="/" className="btn btn-secondary btn-sm">
+                Открыть
+              </Link>
             </div>
           ))}
         </div>
@@ -103,7 +198,6 @@ export function SharePage() {
         <div className="card">
           <h3>Пригласить</h3>
           {error && <Alert type="error">{error}</Alert>}
-          {msg && <Alert type="success">{msg}</Alert>}
           {calendars.length === 0 ? (
             <Empty title="Сначала создайте календарь" />
           ) : (
@@ -118,22 +212,39 @@ export function SharePage() {
                 </Select>
               </Field>
               <Field label="Права">
-                <Select value={permission} onChange={(e) => setPermission(e.target.value as 'edit' | 'view')}>
-                  <option value="view">Только просмотр</option>
-                  <option value="edit">Совместное редактирование</option>
+                <Select
+                  value={permission}
+                  onChange={(e) => setPermission(e.target.value as 'edit' | 'view')}
+                >
+                  <option value="view">Клиент / только просмотр</option>
+                  <option value="edit">Мастер / совместное редактирование</option>
                 </Select>
               </Field>
               <Field label="Пригласить по">
-                <Select value={targetType} onChange={(e) => setTargetType(e.target.value as 'email' | 'phone')}>
+                <Select
+                  value={targetType}
+                  onChange={(e) => setTargetType(e.target.value as 'email' | 'phone')}
+                >
                   <option value="email">Email</option>
-                  <option value="phone">Телефон</option>
+                  <option value="phone">Телефон (+7…)</option>
                 </Select>
               </Field>
-              <Field label={targetType === 'email' ? 'Email' : 'Телефон'}>
-                <Input value={target} onChange={(e) => setTarget(e.target.value)} />
+              <Field label={targetType === 'email' ? 'Email получателя' : 'Телефон получателя'}>
+                <Input
+                  value={target}
+                  onChange={(e) => setTarget(e.target.value)}
+                  placeholder={
+                    targetType === 'email' ? 'client@mail.ru' : '+79991234567'
+                  }
+                  autoComplete={targetType === 'email' ? 'email' : 'tel'}
+                />
               </Field>
+              <p className="muted" style={{ fontSize: '0.75rem', marginTop: -8 }}>
+                Получатель должен уже зарегистрироваться в приложении (или зарегистрируется
+                позже) с этим email/телефоном, зайти в «Доступ» и нажать «Принять».
+              </p>
               <Button type="submit" disabled={sending}>
-                {sending ? 'Отправка…' : 'Отправить'}
+                {sending ? 'Отправка…' : 'Отправить приглашение'}
               </Button>
             </form>
           )}
@@ -144,29 +255,37 @@ export function SharePage() {
         calendars.map((c) =>
           c.editors.length || c.viewers.length ? (
             <div key={c.id} className="card">
-              <h3>{c.name}</h3>
-              {c.editors.map((uid) => (
-                <div key={uid} className="list-item">
+              <h3>{c.name} — участники</h3>
+              {c.editors.map((id) => (
+                <div key={id} className="list-item">
                   <div style={{ flex: 1 }}>
                     <div className="muted" style={{ fontSize: '0.75rem' }}>
                       Редактор
                     </div>
-                    <code style={{ fontSize: '0.8rem' }}>{uid.slice(0, 12)}…</code>
+                    <code style={{ fontSize: '0.8rem' }}>{id.slice(0, 16)}…</code>
                   </div>
-                  <Button size="sm" variant="danger" onClick={() => removeCalendarMember(c.id, uid, 'edit')}>
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    onClick={() => removeCalendarMember(c.id, id, 'edit')}
+                  >
                     Убрать
                   </Button>
                 </div>
               ))}
-              {c.viewers.map((uid) => (
-                <div key={uid} className="list-item">
+              {c.viewers.map((id) => (
+                <div key={id} className="list-item">
                   <div style={{ flex: 1 }}>
                     <div className="muted" style={{ fontSize: '0.75rem' }}>
                       Просмотр
                     </div>
-                    <code style={{ fontSize: '0.8rem' }}>{uid.slice(0, 12)}…</code>
+                    <code style={{ fontSize: '0.8rem' }}>{id.slice(0, 16)}…</code>
                   </div>
-                  <Button size="sm" variant="danger" onClick={() => removeCalendarMember(c.id, uid, 'view')}>
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    onClick={() => removeCalendarMember(c.id, id, 'view')}
+                  >
                     Убрать
                   </Button>
                 </div>

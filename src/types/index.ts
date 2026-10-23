@@ -75,6 +75,7 @@ export interface ShareInvite {
   fromName: string;
   toEmail: string | null;
   toPhone: string | null;
+  toUid?: string | null;
   permission: 'edit' | 'view';
   status: 'pending' | 'accepted' | 'rejected';
   createdAt: number;

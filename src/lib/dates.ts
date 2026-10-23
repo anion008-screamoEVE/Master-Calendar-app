@@ -57,7 +57,7 @@ export function calcEndTime(startTime: string, durationMinutes: number): string 
   return `${String(eh).padStart(2, '0')}:${String(em).padStart(2, '0')}`;
 }
 
-/** Разница end − start в минутах. Если end ≤ start — считаем через полночь. */
+/** Разница end - start в минутах. Если end ≤ start - считаем через полночь. */
 export function durationFromRange(startTime: string, endTime: string): number {
   const sp = String(startTime).split(':');
   const ep = String(endTime).split(':');

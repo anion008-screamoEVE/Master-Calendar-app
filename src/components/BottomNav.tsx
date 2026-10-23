@@ -4,12 +4,14 @@ import { useAuth } from '../contexts/AuthContext';
 
 export function BottomNav() {
   const { isMaster } = useAuth();
+
+  // «Доступ» виден и мастеру, и клиенту (входящие приглашения)
   const items = [
     { to: '/', icon: CalendarDays, label: 'Календарь', end: true },
+    { to: '/share', icon: Users, label: 'Доступ', end: false },
     ...(isMaster
       ? [
           { to: '/calendars', icon: LayoutGrid, label: 'Календари', end: false },
-          { to: '/share', icon: Users, label: 'Доступ', end: false },
           { to: '/subscription', icon: CreditCard, label: 'Подписка', end: false },
         ]
       : []),

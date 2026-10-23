@@ -28,6 +28,7 @@ import type {
 import { trialDefaults } from './subscription';
 import { combineDateTime } from './dates';
 
+// Time helpers kept in this file so Netlify build never fails on missing imports
 function calcEndTime(startTime: string, durationMinutes: number): string {
   const mins = Math.max(0, Math.floor(Number(durationMinutes) || 0));
   const parts = String(startTime).split(':');
@@ -267,6 +268,42 @@ export async function deleteCalendar(id: string) {
   await deleteDoc(doc(db, 'calendars', id));
 }
 
+
+function normalizeShareEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+function normalizeSharePhone(phone: string): string {
+  let d = phone.replace(/\D/g, '');
+  if (d.startsWith('8') && d.length === 11) d = '7' + d.slice(1);
+  if (d.length === 10) d = '7' + d;
+  return d ? '+' + d : phone.trim();
+}
+
+export async function findUserByEmail(email: string): Promise<AppUser | null> {
+  const snap = await getDocs(
+    query(collection(db, 'users'), where('email', '==', normalizeShareEmail(email)))
+  );
+  if (snap.empty) return null;
+  const d = snap.docs[0];
+  return mapUser(d.id, d.data() as Record<string, unknown>);
+}
+
+export async function findUserByPhone(phone: string): Promise<AppUser | null> {
+  const normalized = normalizeSharePhone(phone);
+  const variants = Array.from(
+    new Set([normalized, phone.trim(), phone.replace(/\D/g, '')].filter(Boolean))
+  );
+  for (const v of variants) {
+    const snap = await getDocs(query(collection(db, 'users'), where('phone', '==', v)));
+    if (!snap.empty) {
+      const d = snap.docs[0];
+      return mapUser(d.id, d.data() as Record<string, unknown>);
+    }
+  }
+  return null;
+}
+
 export async function shareCalendar(
   calendarId: string,
   calendarName: string,
@@ -275,49 +312,104 @@ export async function shareCalendar(
   target: { email?: string; phone?: string },
   permission: 'edit' | 'view'
 ) {
+  const toEmail = target.email ? normalizeShareEmail(target.email) : null;
+  const toPhone = target.phone ? normalizeSharePhone(target.phone) : null;
+  if (!toEmail && !toPhone) {
+    throw new Error('Укажите email или телефон получателя');
+  }
+
+  let toUid: string | null = null;
+  let targetUser: AppUser | null = null;
+  if (toEmail) targetUser = await findUserByEmail(toEmail);
+  if (!targetUser && toPhone) targetUser = await findUserByPhone(toPhone);
+  if (targetUser) toUid = targetUser.uid;
+
   const ref = doc(collection(db, 'shares'));
   await setDoc(ref, {
     calendarId,
     calendarName,
     fromUid,
     fromName,
-    toEmail: target.email || null,
-    toPhone: target.phone || null,
+    toEmail,
+    toPhone,
+    toUid,
     permission,
     status: 'pending',
     createdAt: Timestamp.fromMillis(Date.now()),
   });
+
   const field = permission === 'edit' ? 'pendingEditors' : 'pendingViewers';
-  const value = target.email || target.phone || '';
-  if (value) {
+  const pendingValues = [toEmail, toPhone].filter(Boolean) as string[];
+  if (pendingValues.length) {
     await updateDoc(doc(db, 'calendars', calendarId), {
-      [field]: arrayUnion(value),
+      [field]: arrayUnion(...pendingValues),
       updatedAt: Timestamp.fromMillis(Date.now()),
     });
   }
   return ref.id;
 }
 
-export async function acceptShare(shareId: string, uid: string) {
+export async function acceptShare(
+  shareId: string,
+  uid: string,
+  profile?: { email?: string | null; phone?: string | null }
+) {
   const ref = doc(db, 'shares', shareId);
   const snap = await getDoc(ref);
   if (!snap.exists()) throw new Error('Приглашение не найдено');
   const data = snap.data();
+  if (data.status !== 'pending') throw new Error('Приглашение уже обработано');
+
   const field = data.permission === 'edit' ? 'editors' : 'viewers';
-  await updateDoc(doc(db, 'calendars', data.calendarId), {
-    [field]: arrayUnion(uid),
-    updatedAt: Timestamp.fromMillis(Date.now()),
+  const pendingField = data.permission === 'edit' ? 'pendingEditors' : 'pendingViewers';
+  const calRef = doc(db, 'calendars', data.calendarId as string);
+
+  try {
+    await updateDoc(calRef, {
+      [field]: arrayUnion(uid),
+      updatedAt: Timestamp.fromMillis(Date.now()),
+    });
+  } catch (e) {
+    throw new Error(
+      'Не удалось принять доступ. Опубликуйте новые firestore.rules. ' +
+        (e instanceof Error ? e.message : '')
+    );
+  }
+
+  const pendingClean = [
+    data.toEmail,
+    data.toPhone,
+    profile?.email ? normalizeShareEmail(profile.email) : null,
+    profile?.phone ? normalizeSharePhone(profile.phone) : null,
+  ].filter(Boolean) as string[];
+  if (pendingClean.length) {
+    try {
+      await updateDoc(calRef, { [pendingField]: arrayRemove(...pendingClean) });
+    } catch {
+      /* optional */
+    }
+  }
+
+  await updateDoc(ref, {
+    status: 'accepted',
+    toUid: uid,
+    acceptedAt: Timestamp.fromMillis(Date.now()),
   });
-  await updateDoc(ref, { status: 'accepted' });
 }
 
 export async function rejectShare(shareId: string) {
-  await updateDoc(doc(db, 'shares', shareId), { status: 'rejected' });
+  await updateDoc(doc(db, 'shares', shareId), {
+    status: 'rejected',
+    rejectedAt: Timestamp.fromMillis(Date.now()),
+  });
 }
 
 export function subscribePendingShares(
-  email: string | null,
-  phone: string | null,
+  opts: {
+    uid?: string | null;
+    email?: string | null;
+    phone?: string | null;
+  },
   cb: (list: ShareInvite[]) => void
 ): Unsubscribe {
   const map = new Map<string, ShareInvite>();
@@ -327,6 +419,7 @@ export function subscribePendingShares(
         .filter((s) => s.status === 'pending')
         .sort((a, b) => b.createdAt - a.createdAt)
     );
+
   const unsubs: Unsubscribe[] = [];
   const mapShare = (id: string, data: Record<string, unknown>): ShareInvite => ({
     id,
@@ -336,40 +429,56 @@ export function subscribePendingShares(
     fromName: (data.fromName as string) || '',
     toEmail: (data.toEmail as string) || null,
     toPhone: (data.toPhone as string) || null,
+    toUid: (data.toUid as string) || null,
     permission: data.permission as 'edit' | 'view',
     status: data.status as ShareInvite['status'],
     createdAt: tsToMs(data.createdAt),
   });
 
-  if (email) {
+  const attach = (qRef: ReturnType<typeof query>) => {
     unsubs.push(
       onSnapshot(
-        query(collection(db, 'shares'), where('toEmail', '==', email), where('status', '==', 'pending')),
+        qRef,
         (snap) => {
           snap.docChanges().forEach((ch) => {
             if (ch.type === 'removed') map.delete(ch.doc.id);
             else map.set(ch.doc.id, mapShare(ch.doc.id, ch.doc.data() as Record<string, unknown>));
           });
           emit();
+        },
+        (err) => {
+          console.error('shares subscribe error', err);
+          emit();
         }
       )
+    );
+  };
+
+  const email = opts.email ? normalizeShareEmail(opts.email) : null;
+  const phone = opts.phone ? normalizeSharePhone(opts.phone) : null;
+  const uid = opts.uid || null;
+  let any = false;
+
+  if (uid) {
+    any = true;
+    attach(
+      query(collection(db, 'shares'), where('toUid', '==', uid), where('status', '==', 'pending'))
+    );
+  }
+  if (email) {
+    any = true;
+    attach(
+      query(collection(db, 'shares'), where('toEmail', '==', email), where('status', '==', 'pending'))
     );
   }
   if (phone) {
-    unsubs.push(
-      onSnapshot(
-        query(collection(db, 'shares'), where('toPhone', '==', phone), where('status', '==', 'pending')),
-        (snap) => {
-          snap.docChanges().forEach((ch) => {
-            if (ch.type === 'removed') map.delete(ch.doc.id);
-            else map.set(ch.doc.id, mapShare(ch.doc.id, ch.doc.data() as Record<string, unknown>));
-          });
-          emit();
-        }
-      )
+    any = true;
+    attach(
+      query(collection(db, 'shares'), where('toPhone', '==', phone), where('status', '==', 'pending'))
     );
   }
-  if (!email && !phone) {
+
+  if (!any) {
     cb([]);
     return () => undefined;
   }
