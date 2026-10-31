@@ -1,16 +1,33 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { signInWithCustomToken } from 'firebase/auth';
 import { useAuth } from '../contexts/AuthContext';
 import type { UserRole } from '../types';
 import { Alert, Button, Field, Input } from '../components/ui';
-import { isFirebaseConfigured } from '../lib/firebase';
+import { auth as fbAuth, isFirebaseConfigured } from '../lib/firebase';
 import { Scissors, User } from 'lucide-react';
 
 type Mode = 'login' | 'register';
 
+declare global {
+  interface Window {
+    onTelegramAuth?: (user: TelegramUser) => void;
+  }
+}
+
+interface TelegramUser {
+  id: number;
+  first_name?: string;
+  last_name?: string;
+  username?: string;
+  photo_url?: string;
+  auth_date: number;
+  hash: string;
+}
+
 /**
- * Phone Auth via Firebase Phone requires reCAPTCHA + paid SMS and often fails in RU.
- * We use Email as primary. Phone field is optional profile data.
- * For SMS login without reCAPTCHA see SETUP: SMS.ru / Telegram Login (recommended).
+ * Auth: Email (no captcha) + optional Telegram Login (free, no Firebase Blaze SMS).
+ * Set VITE_TELEGRAM_BOT_USERNAME in Netlify (bot from @BotFather).
+ * Backend: Netlify function telegram-auth OR Firebase function (see SETUP).
  */
 export function AuthPage() {
   const auth = useAuth();
@@ -19,18 +36,66 @@ export function AuthPage() {
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [phoneOptional, setPhoneOptional] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [tgLoading, setTgLoading] = useState(false);
+
+  const botUsername = import.meta.env.VITE_TELEGRAM_BOT_USERNAME as string | undefined;
+
+  useEffect(() => {
+    if (!botUsername) return;
+
+    window.onTelegramAuth = async (user: TelegramUser) => {
+      setTgLoading(true);
+      setError(null);
+      try {
+        const endpoint =
+          (import.meta.env.VITE_TELEGRAM_AUTH_URL as string) ||
+          '/.netlify/functions/telegram-auth';
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...user, role }),
+        });
+        const data = (await res.json()) as { token?: string; error?: string };
+        if (!res.ok || !data.token) {
+          throw new Error(data.error || 'Telegram auth failed');
+        }
+        await signInWithCustomToken(fbAuth, data.token);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Ошибка Telegram');
+      } finally {
+        setTgLoading(false);
+      }
+    };
+
+    // Inject Telegram widget script
+    const id = 'telegram-login-script';
+    if (!document.getElementById(id)) {
+      const s = document.createElement('script');
+      s.id = id;
+      s.src = 'https://telegram.org/js/telegram-widget.js?22';
+      s.async = true;
+      s.setAttribute('data-telegram-login', botUsername);
+      s.setAttribute('data-size', 'large');
+      s.setAttribute('data-radius', '12');
+      s.setAttribute('data-onauth', 'onTelegramAuth(user)');
+      s.setAttribute('data-request-access', 'write');
+      const mount = document.getElementById('telegram-login-mount');
+      if (mount) mount.appendChild(s);
+    }
+
+    return () => {
+      window.onTelegramAuth = undefined;
+    };
+  }, [botUsername, role]);
 
   if (!isFirebaseConfigured) {
     return (
       <div className="center-page">
         <div className="auth-card card">
           <h1>Нужна настройка Firebase</h1>
-          <p className="muted">
-            Заполните VITE_FIREBASE_* в Netlify / .env.local
-          </p>
+          <p className="muted">VITE_FIREBASE_* в Netlify</p>
         </div>
       </div>
     );
@@ -41,12 +106,10 @@ export function AuthPage() {
     setError(null);
     setLoading(true);
     try {
-      if (mode === 'login') {
-        await auth.signInEmail(email, password);
-      } else {
+      if (mode === 'login') await auth.signInEmail(email, password);
+      else {
         if (!displayName.trim()) throw new Error('Укажите имя');
         await auth.registerEmail(email, password, displayName.trim(), role);
-        // phone optional — stored after profile exists via settings
       }
     } catch (err) {
       setError(mapAuthError(err));
@@ -63,7 +126,7 @@ export function AuthPage() {
         </div>
         <h1 style={{ textAlign: 'center' }}>Мастер-Календарь</h1>
         <p className="muted" style={{ textAlign: 'center', marginBottom: 20 }}>
-          Записи · уведомления · совместная работа
+          Email без капчи · Telegram без Blaze SMS
         </p>
 
         <div className="card">
@@ -71,65 +134,52 @@ export function AuthPage() {
             <button
               type="button"
               className={`tab ${mode === 'login' ? 'active' : ''}`}
-              onClick={() => {
-                setMode('login');
-                setError(null);
-              }}
+              onClick={() => setMode('login')}
             >
               Вход
             </button>
             <button
               type="button"
               className={`tab ${mode === 'register' ? 'active' : ''}`}
-              onClick={() => {
-                setMode('register');
-                setError(null);
-              }}
+              onClick={() => setMode('register')}
             >
               Регистрация
             </button>
           </div>
 
           {mode === 'register' && (
-            <>
-              <p className="muted" style={{ marginBottom: 8 }}>
-                Тип аккаунта
-              </p>
-              <div className="role-grid">
-                <button
-                  type="button"
-                  className={`role-card ${role === 'master' ? 'active' : ''}`}
-                  onClick={() => setRole('master')}
-                >
-                  <div className="title">
-                    <Scissors size={18} style={{ verticalAlign: 'middle' }} /> Мастер
-                  </div>
-                  <div className="desc">Календарь, записи, подписка</div>
-                </button>
-                <button
-                  type="button"
-                  className={`role-card ${role === 'client' ? 'active' : ''}`}
-                  onClick={() => setRole('client')}
-                >
-                  <div className="title">
-                    <User size={18} style={{ verticalAlign: 'middle' }} /> Клиент
-                  </div>
-                  <div className="desc">Просмотр записей</div>
-                </button>
-              </div>
-            </>
+            <div className="role-grid">
+              <button
+                type="button"
+                className={`role-card ${role === 'master' ? 'active' : ''}`}
+                onClick={() => setRole('master')}
+              >
+                <div className="title">
+                  <Scissors size={18} /> Мастер
+                </div>
+              </button>
+              <button
+                type="button"
+                className={`role-card ${role === 'client' ? 'active' : ''}`}
+                onClick={() => setRole('client')}
+              >
+                <div className="title">
+                  <User size={18} /> Клиент
+                </div>
+              </button>
+            </div>
           )}
 
           {error && <Alert type="error">{error}</Alert>}
+          {tgLoading && <Alert type="info">Вход через Telegram…</Alert>}
 
           <form onSubmit={handleEmail}>
             {mode === 'register' && (
-              <Field label="Ваше имя">
+              <Field label="Имя">
                 <Input
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
                   required
-                  autoComplete="name"
                 />
               </Field>
             )}
@@ -140,49 +190,53 @@ export function AuthPage() {
                 onChange={(e) => setEmail(e.target.value)}
                 required
                 autoComplete="email"
-                placeholder="you@mail.ru"
               />
             </Field>
-            <Field label="Пароль" hint="Минимум 6 символов">
+            <Field label="Пароль" hint="От 6 символов, без reCAPTCHA">
               <Input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
                 minLength={6}
-                autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
               />
             </Field>
-            {mode === 'register' && (
-              <Field label="Телефон (необязательно)" hint="Для связи, не для входа">
-                <div className="phone-row">
-                  <div className="phone-prefix">+7</div>
-                  <Input
-                    value={phoneOptional}
-                    onChange={(e) =>
-                      setPhoneOptional(e.target.value.replace(/[^\d\s()-]/g, ''))
-                    }
-                    placeholder="999 123-45-67"
-                    inputMode="tel"
-                  />
-                </div>
-              </Field>
-            )}
             <Button type="submit" disabled={loading}>
-              {loading ? 'Подождите…' : mode === 'login' ? 'Войти' : 'Создать аккаунт'}
+              {loading ? '…' : mode === 'login' ? 'Войти' : 'Создать аккаунт'}
             </Button>
           </form>
 
-          <div className="alert alert-info" style={{ marginTop: 16, marginBottom: 0 }}>
-            <strong>Вход по SMS</strong>
-            <p style={{ margin: '8px 0 0', fontSize: '0.85rem' }}>
-              Firebase Phone Auth требует reCAPTCHA и платные SMS — в РФ часто не работает.
-              Сейчас вход: <b>email + пароль</b> (без капчи).
-              <br />
-              Для SMS без reCAPTCHA: <b>SMS.ru</b> / <b>SMSC.ru</b> + свой код в Cloud Function,
-              или <b>Telegram Login Widget</b> (рекомендуем). Подробно — в SETUP_UPDATE_V11_RU.md
-            </p>
-          </div>
+          <div className="divider">или</div>
+
+          {botUsername ? (
+            <div>
+              <p className="muted" style={{ fontSize: '0.8rem', textAlign: 'center' }}>
+                Вход через Telegram (бесплатно, без SMS Firebase)
+              </p>
+              {mode === 'register' && (
+                <p className="muted" style={{ fontSize: '0.75rem', textAlign: 'center' }}>
+                  Тип аккаунта выбран выше: {role === 'master' ? 'Мастер' : 'Клиент'}
+                </p>
+              )}
+              <div
+                id="telegram-login-mount"
+                style={{ display: 'flex', justifyContent: 'center', minHeight: 48 }}
+              />
+            </div>
+          ) : (
+            <div className="alert alert-info" style={{ marginBottom: 0 }}>
+              <strong>Telegram-вход</strong>
+              <p style={{ margin: '6px 0 0', fontSize: '0.85rem' }}>
+                1. @BotFather → /newbot → получите username бота
+                <br />
+                2. Netlify env: <code>VITE_TELEGRAM_BOT_USERNAME</code>=MyBot
+                <br />
+                3. Задеплойте function <code>telegram-auth</code> (см. SETUP_V12)
+                <br />
+                Без Blaze Phone SMS. Email уже работает без капчи.
+              </p>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -195,11 +249,10 @@ function mapAuthError(err: unknown): string {
   const map: Record<string, string> = {
     'auth/email-already-in-use': 'Email уже зарегистрирован',
     'auth/invalid-email': 'Некорректный email',
-    'auth/weak-password': 'Слишком простой пароль',
-    'auth/user-not-found': 'Пользователь не найден',
+    'auth/weak-password': 'Слабый пароль',
+    'auth/user-not-found': 'Не найден',
     'auth/wrong-password': 'Неверный пароль',
     'auth/invalid-credential': 'Неверный email или пароль',
-    'auth/too-many-requests': 'Слишком много попыток, подождите',
   };
   return map[code] || msg;
 }
@@ -213,8 +266,8 @@ export function CompleteProfilePage() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
     setLoading(true);
+    setError(null);
     try {
       await auth.completeProfile(displayName.trim(), role);
     } catch (err) {
@@ -227,7 +280,7 @@ export function CompleteProfilePage() {
   return (
     <div className="center-page">
       <div className="auth-card card">
-        <h1>Завершите регистрацию</h1>
+        <h1>Профиль</h1>
         {error && <Alert type="error">{error}</Alert>}
         <form onSubmit={submit}>
           <div className="role-grid">
@@ -250,7 +303,7 @@ export function CompleteProfilePage() {
             <Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} required />
           </Field>
           <Button type="submit" disabled={loading}>
-            Продолжить
+            Далее
           </Button>
         </form>
       </div>

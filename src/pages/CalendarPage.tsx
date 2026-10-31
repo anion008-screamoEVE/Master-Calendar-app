@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Plus } from 'lucide-react';
+import { Plus, Calendar as CalIcon } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { endOfMonth as dfEnd, startOfMonth as dfStart } from 'date-fns';
+import { endOfMonth as dfEnd, startOfMonth as dfStart, addDays, startOfWeek } from 'date-fns';
 import { useAuth } from '../contexts/AuthContext';
 import {
   subscribeCalendarsForUser,
@@ -12,9 +12,9 @@ import {
 } from '../lib/api';
 import type { Appointment, Calendar } from '../types';
 import { MonthCalendar } from '../components/MonthCalendar';
-import { AppointmentCard } from '../components/AppointmentCard';
+import { WeekCalendar, DayHourGrid } from '../components/WeekCalendar';
 import { AppointmentForm, type AppointmentFormValues } from '../components/AppointmentForm';
-import { Empty, Sheet, Spinner, Alert } from '../components/ui';
+import { Empty, Sheet, Spinner, Alert, Button } from '../components/ui';
 import { formatRu, toDateKey, format, calcEndTime } from '../lib/dates';
 import { isSubscriptionActive } from '../lib/subscription';
 
@@ -22,12 +22,22 @@ export function CalendarPage() {
   const { profile, firebaseUser, isMaster, canUseApp } = useAuth();
   const [calendars, setCalendars] = useState<Calendar[]>([]);
   const [activeCalId, setActiveCalId] = useState<string | null>(null);
-  const [viewDate, setViewDate] = useState(new Date());
+  const [weekAnchor, setWeekAnchor] = useState(new Date());
   const [selected, setSelected] = useState(new Date());
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [loading, setLoading] = useState(true);
+
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editing, setEditing] = useState<Appointment | null>(null);
+  const [createPrefill, setCreatePrefill] = useState<{
+    date: string;
+    start: string;
+    master: string;
+  } | null>(null);
+
+  const [monthPickerOpen, setMonthPickerOpen] = useState(false);
+  const [monthViewDate, setMonthViewDate] = useState(new Date());
+  const [daySheetOpen, setDaySheetOpen] = useState(false);
 
   useEffect(() => {
     if (!firebaseUser) return;
@@ -43,7 +53,6 @@ export function CalendarPage() {
 
   const activeCal = calendars.find((c) => c.id === activeCalId) || null;
 
-  /** Can create/edit calendar structure */
   const canCreate = useMemo(() => {
     if (!firebaseUser || !activeCal || !isMaster || !canUseApp) return false;
     return (
@@ -51,28 +60,34 @@ export function CalendarPage() {
     );
   }, [activeCal, firebaseUser, isMaster, canUseApp]);
 
-  /** Open card only if this user owns the appointment (createdBy) */
   function canOpenCard(a: Appointment): boolean {
     if (!firebaseUser || !isMaster) return false;
     return a.createdBy === firebaseUser.uid;
   }
 
+  // Load appointments for week ± buffer (and month when picker open)
   useEffect(() => {
     if (!activeCalId) {
       setAppointments([]);
       return;
     }
-    const from = format(dfStart(viewDate), 'yyyy-MM-dd');
-    const to = format(dfEnd(viewDate), 'yyyy-MM-dd');
+    const ws = startOfWeek(weekAnchor, { weekStartsOn: 1 });
+    const from = format(addDays(ws, -7), 'yyyy-MM-dd');
+    const to = format(addDays(ws, 20), 'yyyy-MM-dd');
     return subscribeAppointments(activeCalId, from, to, setAppointments);
-  }, [activeCalId, viewDate]);
+  }, [activeCalId, weekAnchor]);
 
-  const dayKey = toDateKey(selected);
-  const dayApts = appointments
-    .filter((a) => a.date === dayKey)
-    .sort((a, b) => a.startTime.localeCompare(b.startTime));
+  // Masters from appointments in current data
+  const masters = useMemo(() => {
+    const set = new Set<string>();
+    appointments.forEach((a) => {
+      const n = (a.masterName || '').trim();
+      if (n) set.add(n);
+    });
+    if (profile?.displayName && isMaster) set.add(profile.displayName);
+    return Array.from(set).sort();
+  }, [appointments, profile?.displayName, isMaster]);
 
-  /** Revenue only from MY completed appointments */
   const stats = useMemo(() => {
     const uid = firebaseUser?.uid;
     const mine = (a: Appointment) => !uid || a.createdBy === uid;
@@ -80,24 +95,27 @@ export function CalendarPage() {
     const todayCount = appointments.filter(
       (a) => a.date === today && a.status !== 'cancelled' && mine(a)
     ).length;
-    const monthCount = appointments.filter((a) => a.status !== 'cancelled' && mine(a)).length;
     const revenue = appointments
       .filter((a) => a.status === 'completed' && mine(a))
       .reduce((s, a) => s + (a.price || 0), 0);
-    return { todayCount, monthCount, revenue };
+    return { todayCount, revenue };
   }, [appointments, firebaseUser?.uid]);
+
+  // Month picker needs month range apts — reuse same list if overlaps; else separate
+  const [monthApts, setMonthApts] = useState<Appointment[]>([]);
+  useEffect(() => {
+    if (!activeCalId || !monthPickerOpen) return;
+    const from = format(dfStart(monthViewDate), 'yyyy-MM-dd');
+    const to = format(dfEnd(monthViewDate), 'yyyy-MM-dd');
+    return subscribeAppointments(activeCalId, from, to, setMonthApts);
+  }, [activeCalId, monthViewDate, monthPickerOpen]);
 
   async function handleSave(values: AppointmentFormValues) {
     if (!firebaseUser || !activeCalId) return;
-    // Only owner can edit existing; cannot edit others' cards
     if (editing && editing.createdBy !== firebaseUser.uid) {
       throw new Error('Нельзя редактировать чужую запись');
     }
-
-    const endTime =
-      values.endTime ||
-      calcEndTime(values.startTime, values.durationMinutes || 60);
-
+    const endTime = values.endTime || calcEndTime(values.startTime, values.durationMinutes || 60);
     const payload = {
       calendarId: activeCalId,
       date: values.date,
@@ -119,17 +137,30 @@ export function CalendarPage() {
       createdBy: editing?.createdBy || firebaseUser.uid,
       clientUid: null as string | null,
     };
-
     const mins = profile?.notifyMinutesBefore ?? 60;
     if (editing) await updateAppointment(editing.id, payload, mins);
     else await createAppointment(payload, mins);
     setSheetOpen(false);
     setEditing(null);
+    setCreatePrefill(null);
   }
 
-  function tryOpen(a: Appointment) {
+  function openCreate(dateKey?: string, hour?: number, master?: string) {
+    const start =
+      hour != null ? `${String(hour).padStart(2, '0')}:00` : '10:00';
+    setEditing(null);
+    setCreatePrefill({
+      date: dateKey || toDateKey(selected),
+      start,
+      master: master || profile?.displayName || '',
+    });
+    setSheetOpen(true);
+  }
+
+  function openApt(a: Appointment) {
     if (!canOpenCard(a)) return;
     setEditing(a);
+    setCreatePrefill(null);
     setSheetOpen(true);
   }
 
@@ -139,9 +170,9 @@ export function CalendarPage() {
     return (
       <div>
         <h1>Календарь</h1>
-        <Alert type="warn">Подписка истекла. Продлите доступ.</Alert>
+        <Alert type="warn">Подписка истекла.</Alert>
         <Link to="/subscription" className="btn btn-primary" style={{ display: 'inline-flex' }}>
-          Оформить подписку — 200 ₽/мес
+          Подписка
         </Link>
       </div>
     );
@@ -153,13 +184,13 @@ export function CalendarPage() {
         <h1>Календарь</h1>
         {isMaster ? (
           <>
-            <Empty emoji="✨" title="Создайте первый календарь" text="Раздел «Календари»." />
+            <Empty title="Создайте календарь" />
             <Link to="/calendars" className="btn btn-primary" style={{ display: 'inline-flex' }}>
-              Создать календарь
+              Создать
             </Link>
           </>
         ) : (
-          <Empty emoji="👀" title="Нет доступных календарей" text="Попросите мастера поделиться." />
+          <Empty title="Нет календарей" text="Попросите мастера открыть доступ" />
         )}
       </div>
     );
@@ -168,11 +199,20 @@ export function CalendarPage() {
   return (
     <div>
       <div className="top-bar">
-        <div>
-          <h1 style={{ marginBottom: 2 }}>Календарь</h1>
-          <p className="muted" style={{ margin: 0 }}>
-            {formatRu(selected, 'd MMMM yyyy, EEEE')}
-          </p>
+        <div style={{ flex: 1 }}>
+          <h1 style={{ marginBottom: 4 }}>Календарь</h1>
+          {/* Date button opens month picker */}
+          <button
+            type="button"
+            className="date-pill"
+            onClick={() => {
+              setMonthViewDate(selected);
+              setMonthPickerOpen(true);
+            }}
+          >
+            <CalIcon size={16} />
+            <span>{formatRu(selected, 'd MMMM yyyy, EEEE')}</span>
+          </button>
         </div>
       </div>
 
@@ -199,84 +239,117 @@ export function CalendarPage() {
             <div className="lbl">мои сегодня</div>
           </div>
           <div className="stat">
-            <div className="num">{stats.monthCount}</div>
-            <div className="lbl">мои в месяце</div>
-          </div>
-          <div className="stat">
             <div className="num">{stats.revenue.toLocaleString('ru-RU')}</div>
             <div className="lbl">₽ моя выручка</div>
           </div>
         </div>
       )}
 
-      <MonthCalendar
-        viewDate={viewDate}
-        onViewDateChange={setViewDate}
+      <WeekCalendar
+        weekAnchor={weekAnchor}
+        onWeekChange={(d) => {
+          setWeekAnchor(d);
+        }}
         selected={selected}
-        onSelect={setSelected}
+        onSelectDay={(d) => {
+          setSelected(d);
+          setDaySheetOpen(true);
+        }}
         appointments={appointments}
+        masters={masters}
+        onOpenAppointment={openApt}
+        onCreateAt={
+          canCreate
+            ? (dateKey, hour, masterName) => openCreate(dateKey, hour, masterName)
+            : undefined
+        }
+        canOpen={canOpenCard}
       />
 
-      <div className="apt-list">
-        <h3 style={{ marginTop: 4 }}>Записи на {formatRu(selected, 'd MMMM')}</h3>
-        {!isMaster && (
-          <p className="muted" style={{ fontSize: '0.8rem', marginTop: 0 }}>
-            Карточки только для просмотра в списке (без открытия деталей).
-          </p>
-        )}
-        {isMaster && (
-          <p className="muted" style={{ fontSize: '0.8rem', marginTop: 0 }}>
-            Открыть и редактировать можно только свои записи. Чужие — только строка в списке.
-            Выручка считает только ваши завершённые записи.
-          </p>
-        )}
-        {dayApts.length === 0 ? (
-          <Empty
-            emoji="☕"
-            title="Записей нет"
-            text={canCreate ? 'Нажмите +, чтобы добавить' : undefined}
-          />
-        ) : (
-          dayApts.map((a) => {
-            const mine = canOpenCard(a);
-            return (
-              <AppointmentCard
-                key={a.id}
-                apt={a}
-                showPrice={mine}
-                clickable={mine}
-                onClick={mine ? () => tryOpen(a) : undefined}
-              />
-            );
-          })
-        )}
-      </div>
+      <p className="muted" style={{ fontSize: '0.75rem', marginTop: 8 }}>
+        Записи внутри сетки: время, мастер, описание. Клик по дню (шапка) — день 08:00–21:00.
+        Клик по дате сверху — месяц. Чужие карточки не открываются.
+      </p>
 
       {canCreate && (
         <button
           type="button"
           className="fab"
-          onClick={() => {
-            setEditing(null);
-            setSheetOpen(true);
-          }}
+          onClick={() => openCreate()}
           aria-label="Новая запись"
         >
           <Plus size={28} />
         </button>
       )}
 
+      {/* Month picker sheet */}
+      <Sheet
+        open={monthPickerOpen}
+        onClose={() => setMonthPickerOpen(false)}
+        title="Выбор даты"
+      >
+        <MonthCalendar
+          viewDate={monthViewDate}
+          onViewDateChange={setMonthViewDate}
+          selected={selected}
+          onSelect={(d) => {
+            setSelected(d);
+            setWeekAnchor(d);
+            setMonthPickerOpen(false);
+          }}
+          appointments={monthApts}
+        />
+        <Button
+          variant="secondary"
+          style={{ marginTop: 12 }}
+          onClick={() => setMonthPickerOpen(false)}
+        >
+          Закрыть
+        </Button>
+      </Sheet>
+
+      {/* Day hours 08–21 */}
+      <Sheet open={daySheetOpen} onClose={() => setDaySheetOpen(false)} title="День">
+        <DayHourGrid
+          day={selected}
+          appointments={appointments}
+          onOpenAppointment={(a) => {
+            setDaySheetOpen(false);
+            openApt(a);
+          }}
+          onCreateAt={
+            canCreate
+              ? (hour) => {
+                  setDaySheetOpen(false);
+                  openCreate(toDateKey(selected), hour);
+                }
+              : undefined
+          }
+          canOpen={canOpenCard}
+        />
+      </Sheet>
+
+      {/* Create / edit form */}
       <Sheet
         open={sheetOpen}
         onClose={() => {
           setSheetOpen(false);
           setEditing(null);
+          setCreatePrefill(null);
         }}
         title={editing ? 'Моя запись' : 'Новая запись'}
       >
         <AppointmentForm
-          key={(editing?.id || 'new') + '-' + dayKey + '-v110'}
-          initialDate={dayKey}
+          key={
+            (editing?.id || 'new') +
+            '-' +
+            (createPrefill?.date || '') +
+            (createPrefill?.start || '') +
+            '-v120'
+          }
+          initialDate={createPrefill?.date || toDateKey(selected)}
+          initialStartTime={createPrefill?.start}
+          initialMasterName={createPrefill?.master}
           existing={editing}
           onSubmit={handleSave}
           onDelete={
@@ -288,7 +361,6 @@ export function CalendarPage() {
                 }
               : undefined
           }
-          readOnly={false}
         />
       </Sheet>
     </div>
