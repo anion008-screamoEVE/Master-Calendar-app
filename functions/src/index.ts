@@ -89,6 +89,47 @@ function mailTransport() {
   });
 }
 
+async function sendPushToUid(
+  messaging: ReturnType<typeof getMessaging>,
+  uid: string,
+  title: string,
+  body: string,
+  data: Record<string, string>
+) {
+  const tokensSnap = await db.collection('fcmTokens').where('uid', '==', uid).get();
+  const tokens = tokensSnap.docs.map((d) => d.data().token as string).filter(Boolean);
+  if (!tokens.length) return;
+  try {
+    const res = await messaging.sendEachForMulticast({
+      tokens,
+      notification: { title, body },
+      data,
+      android: { priority: 'high' },
+      webpush: {
+        headers: { Urgency: 'high' },
+        notification: { title, body, icon: '/icons/icon-192.png' },
+      },
+    });
+    // drop invalid tokens
+    res.responses.forEach((r, i) => {
+      if (!r.success) {
+        const code = r.error?.code || '';
+        if (code.includes('registration-token-not-registered') || code.includes('invalid-argument')) {
+          const bad = tokens[i];
+          void db
+            .collection('fcmTokens')
+            .where('token', '==', bad)
+            .get()
+            .then((s) => s.docs.forEach((d) => d.ref.delete()));
+        }
+      }
+    });
+  } catch (e) {
+    console.error('FCM', uid, e);
+  }
+}
+
+/** Reminders every 5 min — notify appointment creator + optional clientUid */
 export const sendAppointmentReminders = onSchedule('every 5 minutes', async () => {
   const now = Timestamp.now();
   const q = await db
@@ -98,53 +139,48 @@ export const sendAppointmentReminders = onSchedule('every 5 minutes', async () =
     .limit(50)
     .get();
   if (q.empty) return;
+
   const messaging = getMessaging();
   const transporter = mailTransport();
 
   for (const docSnap of q.docs) {
     const apt = docSnap.data();
-    const calSnap = await db.collection('calendars').doc(apt.calendarId).get();
-    if (!calSnap.exists) {
-      await docSnap.ref.update({ notified: true });
-      continue;
-    }
-    const cal = calSnap.data()!;
-    const recipientUids = new Set<string>([cal.ownerId, ...(cal.editors || []), ...(cal.viewers || [])]);
     const title = 'Скоро запись';
-    const body = `${apt.startTime} · ${apt.service || 'Услуга'} · ${apt.clientName || ''}`.trim();
+    const body = `${apt.date || ''} ${apt.startTime || ''} · ${apt.service || 'Услуга'} · ${
+      apt.clientName || ''
+    }`.trim();
+
+    // Only people related to THIS appointment (privacy)
+    const recipientUids = new Set<string>();
+    if (apt.createdBy) recipientUids.add(String(apt.createdBy));
+    if (apt.clientUid) recipientUids.add(String(apt.clientUid));
 
     for (const uid of recipientUids) {
       const userSnap = await db.collection('users').doc(uid).get();
       if (!userSnap.exists) continue;
       const user = userSnap.data()!;
+
       if (user.notifyPush !== false) {
-        const tokensSnap = await db.collection('fcmTokens').where('uid', '==', uid).get();
-        const tokens = tokensSnap.docs.map((d) => d.data().token as string).filter(Boolean);
-        if (tokens.length) {
-          try {
-            await messaging.sendEachForMulticast({
-              tokens,
-              notification: { title, body },
-              data: { appointmentId: docSnap.id },
-            });
-          } catch (e) {
-            console.error('FCM', e);
-          }
-        }
+        await sendPushToUid(messaging, uid, title, body, {
+          appointmentId: docSnap.id,
+          calendarId: String(apt.calendarId || ''),
+        });
       }
+
       if (user.notifyEmail !== false && user.email && transporter) {
         try {
           await transporter.sendMail({
             from: process.env.SMTP_FROM || process.env.SMTP_USER,
             to: user.email,
             subject: title,
-            text: `${body}\nДата: ${apt.date}`,
+            text: `${body}\n`,
           });
         } catch (e) {
           console.error('Email', e);
         }
       }
     }
+
     await docSnap.ref.update({ notified: true });
   }
 });

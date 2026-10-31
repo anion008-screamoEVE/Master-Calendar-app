@@ -76,10 +76,19 @@ export function SettingsPage() {
       </div>
 
       <div className="card">
-        <h3>Уведомления</h3>
+        <h3>Push на смартфон</h3>
+        <p className="muted" style={{ fontSize: '0.85rem' }}>
+          1) Откройте сайт в Chrome/Safari → «На экран Домой» (PWA).
+          <br />
+          2) Откройте приложение с иконки.
+          <br />
+          3) Нажмите «Включить push» и разрешите уведомления.
+          <br />
+          4) В Netlify должен быть VITE_FIREBASE_VAPID_KEY; Functions задеплоены.
+        </p>
         <div className="list-item">
           <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 600 }}>Email</div>
+            <div style={{ fontWeight: 600 }}>Email-напоминания</div>
           </div>
           <Switch on={profile.notifyEmail} onToggle={() => toggle('notifyEmail')} label="Email" />
         </div>
@@ -87,7 +96,11 @@ export function SettingsPage() {
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 600 }}>Push</div>
             <div className="muted" style={{ fontSize: '0.8rem' }}>
-              {push.permission === 'granted' ? 'Разрешены' : 'Нужно разрешение'}
+              {push.pushEnabled
+                ? 'Активны'
+                : push.permission === 'granted'
+                  ? 'Разрешение есть, нажмите включить'
+                  : 'Нужно разрешение'}
             </div>
           </div>
           <Switch on={profile.notifyPush} onToggle={() => toggle('notifyPush')} label="Push" />
@@ -96,10 +109,10 @@ export function SettingsPage() {
         <Button
           variant="secondary"
           onClick={async () => {
-            if (await push.enablePush()) setMsg('Push включены');
+            if (await push.enablePush()) setMsg('Push включены. Токен сохранён.');
           }}
         >
-          Включить push
+          Включить push-уведомления
         </Button>
       </div>
 

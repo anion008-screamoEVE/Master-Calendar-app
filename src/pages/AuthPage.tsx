@@ -1,30 +1,27 @@
-import { useRef, useState } from 'react';
-import type { ConfirmationResult, RecaptchaVerifier } from 'firebase/auth';
+import { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import type { UserRole } from '../types';
 import { Alert, Button, Field, Input } from '../components/ui';
-import { isValidRuPhone, normalizePhone } from '../lib/phone';
 import { isFirebaseConfigured } from '../lib/firebase';
 import { Scissors, User } from 'lucide-react';
 
 type Mode = 'login' | 'register';
-type Method = 'email' | 'phone';
 
+/**
+ * Phone Auth via Firebase Phone requires reCAPTCHA + paid SMS and often fails in RU.
+ * We use Email as primary. Phone field is optional profile data.
+ * For SMS login without reCAPTCHA see SETUP: SMS.ru / Telegram Login (recommended).
+ */
 export function AuthPage() {
   const auth = useAuth();
   const [mode, setMode] = useState<Mode>('login');
-  const [method, setMethod] = useState<Method>('email');
   const [role, setRole] = useState<UserRole>('master');
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [phoneLocal, setPhoneLocal] = useState('');
-  const [smsCode, setSmsCode] = useState('');
-  const [step, setStep] = useState<'form' | 'code'>('form');
+  const [phoneOptional, setPhoneOptional] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const confirmationRef = useRef<ConfirmationResult | null>(null);
-  const verifierRef = useRef<RecaptchaVerifier | null>(null);
 
   if (!isFirebaseConfigured) {
     return (
@@ -32,8 +29,7 @@ export function AuthPage() {
         <div className="auth-card card">
           <h1>Нужна настройка Firebase</h1>
           <p className="muted">
-            Создайте <code>.env.local</code> / переменные Netlify по образцу{' '}
-            <code>.env.example</code>.
+            Заполните VITE_FIREBASE_* в Netlify / .env.local
           </p>
         </div>
       </div>
@@ -45,59 +41,13 @@ export function AuthPage() {
     setError(null);
     setLoading(true);
     try {
-      if (mode === 'login') await auth.signInEmail(email, password);
-      else {
+      if (mode === 'login') {
+        await auth.signInEmail(email, password);
+      } else {
         if (!displayName.trim()) throw new Error('Укажите имя');
         await auth.registerEmail(email, password, displayName.trim(), role);
+        // phone optional — stored after profile exists via settings
       }
-    } catch (err) {
-      setError(mapAuthError(err));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function sendCode(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-    const full = normalizePhone('+7' + phoneLocal.replace(/\D/g, ''));
-    if (!isValidRuPhone(full)) {
-      setError('Введите корректный номер: 10 цифр после +7');
-      return;
-    }
-    if (mode === 'register' && !displayName.trim()) {
-      setError('Укажите имя');
-      return;
-    }
-    setLoading(true);
-    try {
-      if (verifierRef.current) {
-        try {
-          verifierRef.current.clear();
-        } catch {
-          /* ignore */
-        }
-      }
-      verifierRef.current = auth.setupRecaptcha('recaptcha-container');
-      confirmationRef.current = await auth.sendPhoneCode(full, verifierRef.current);
-      setStep('code');
-    } catch (err) {
-      setError(mapAuthError(err));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function confirmCode(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-    if (!confirmationRef.current) return;
-    setLoading(true);
-    try {
-      await auth.confirmPhone(confirmationRef.current, smsCode, {
-        displayName: displayName.trim() || undefined,
-        role: mode === 'register' ? role : undefined,
-      });
     } catch (err) {
       setError(mapAuthError(err));
     } finally {
@@ -113,8 +63,9 @@ export function AuthPage() {
         </div>
         <h1 style={{ textAlign: 'center' }}>Мастер-Календарь</h1>
         <p className="muted" style={{ textAlign: 'center', marginBottom: 20 }}>
-          Записи клиентов · уведомления · совместная работа
+          Записи · уведомления · совместная работа
         </p>
+
         <div className="card">
           <div className="tabs">
             <button
@@ -122,7 +73,6 @@ export function AuthPage() {
               className={`tab ${mode === 'login' ? 'active' : ''}`}
               onClick={() => {
                 setMode('login');
-                setStep('form');
                 setError(null);
               }}
             >
@@ -133,7 +83,6 @@ export function AuthPage() {
               className={`tab ${mode === 'register' ? 'active' : ''}`}
               onClick={() => {
                 setMode('register');
-                setStep('form');
                 setError(null);
               }}
             >
@@ -141,7 +90,7 @@ export function AuthPage() {
             </button>
           </div>
 
-          {mode === 'register' && step === 'form' && (
+          {mode === 'register' && (
             <>
               <p className="muted" style={{ marginBottom: 8 }}>
                 Тип аккаунта
@@ -171,103 +120,69 @@ export function AuthPage() {
             </>
           )}
 
-          <div className="tabs">
-            <button
-              type="button"
-              className={`tab ${method === 'email' ? 'active' : ''}`}
-              onClick={() => {
-                setMethod('email');
-                setStep('form');
-              }}
-            >
-              Email
-            </button>
-            <button
-              type="button"
-              className={`tab ${method === 'phone' ? 'active' : ''}`}
-              onClick={() => {
-                setMethod('phone');
-                setStep('form');
-              }}
-            >
-              Телефон
-            </button>
-          </div>
-
           {error && <Alert type="error">{error}</Alert>}
 
-          {method === 'email' && (
-            <form onSubmit={handleEmail}>
-              {mode === 'register' && (
-                <Field label="Ваше имя">
-                  <Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} required />
-                </Field>
-              )}
-              <Field label="Email">
-                <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-              </Field>
-              <Field label="Пароль" hint="Минимум 6 символов">
+          <form onSubmit={handleEmail}>
+            {mode === 'register' && (
+              <Field label="Ваше имя">
                 <Input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
                   required
-                  minLength={6}
+                  autoComplete="name"
                 />
               </Field>
-              <Button type="submit" disabled={loading}>
-                {loading ? 'Подождите…' : mode === 'login' ? 'Войти' : 'Создать аккаунт'}
-              </Button>
-            </form>
-          )}
-
-          {method === 'phone' && step === 'form' && (
-            <form onSubmit={sendCode}>
-              {mode === 'register' && (
-                <Field label="Ваше имя">
-                  <Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} required />
-                </Field>
-              )}
-              <Field label="Номер телефона">
+            )}
+            <Field label="Email">
+              <Input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                autoComplete="email"
+                placeholder="you@mail.ru"
+              />
+            </Field>
+            <Field label="Пароль" hint="Минимум 6 символов">
+              <Input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                minLength={6}
+                autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+              />
+            </Field>
+            {mode === 'register' && (
+              <Field label="Телефон (необязательно)" hint="Для связи, не для входа">
                 <div className="phone-row">
                   <div className="phone-prefix">+7</div>
                   <Input
-                    value={phoneLocal}
-                    onChange={(e) => setPhoneLocal(e.target.value.replace(/[^\d\s()-]/g, ''))}
+                    value={phoneOptional}
+                    onChange={(e) =>
+                      setPhoneOptional(e.target.value.replace(/[^\d\s()-]/g, ''))
+                    }
                     placeholder="999 123-45-67"
                     inputMode="tel"
-                    required
                   />
                 </div>
               </Field>
-              <Button type="submit" disabled={loading}>
-                {loading ? 'Отправка…' : 'Получить код'}
-              </Button>
-            </form>
-          )}
+            )}
+            <Button type="submit" disabled={loading}>
+              {loading ? 'Подождите…' : mode === 'login' ? 'Войти' : 'Создать аккаунт'}
+            </Button>
+          </form>
 
-          {method === 'phone' && step === 'code' && (
-            <form onSubmit={confirmCode}>
-              <Alert type="info">Код отправлен на +7{phoneLocal.replace(/\D/g, '')}</Alert>
-              <Field label="Код из SMS">
-                <Input
-                  value={smsCode}
-                  onChange={(e) => setSmsCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                  inputMode="numeric"
-                  required
-                />
-              </Field>
-              <div className="btn-row">
-                <Button type="button" variant="secondary" onClick={() => setStep('form')}>
-                  Назад
-                </Button>
-                <Button type="submit" disabled={loading || smsCode.length < 6}>
-                  {loading ? 'Проверка…' : 'Подтвердить'}
-                </Button>
-              </div>
-            </form>
-          )}
-          <div id="recaptcha-container" />
+          <div className="alert alert-info" style={{ marginTop: 16, marginBottom: 0 }}>
+            <strong>Вход по SMS</strong>
+            <p style={{ margin: '8px 0 0', fontSize: '0.85rem' }}>
+              Firebase Phone Auth требует reCAPTCHA и платные SMS — в РФ часто не работает.
+              Сейчас вход: <b>email + пароль</b> (без капчи).
+              <br />
+              Для SMS без reCAPTCHA: <b>SMS.ru</b> / <b>SMSC.ru</b> + свой код в Cloud Function,
+              или <b>Telegram Login Widget</b> (рекомендуем). Подробно — в SETUP_UPDATE_V11_RU.md
+            </p>
+          </div>
         </div>
       </div>
     </div>
@@ -285,9 +200,6 @@ function mapAuthError(err: unknown): string {
     'auth/wrong-password': 'Неверный пароль',
     'auth/invalid-credential': 'Неверный email или пароль',
     'auth/too-many-requests': 'Слишком много попыток, подождите',
-    'auth/invalid-phone-number': 'Некорректный номер телефона',
-    'auth/invalid-verification-code': 'Неверный код из SMS',
-    'auth/operation-not-allowed': 'Способ входа не включён в Firebase Console',
   };
   return map[code] || msg;
 }

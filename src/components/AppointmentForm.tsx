@@ -22,9 +22,6 @@ export type AppointmentFormValues = {
   notes: string;
 };
 
-/** Quick chips only — NOT a dropdown limit */
-const HINTS = [15, 30, 45, 60, 90, 120, 180, 240, 300, 360];
-
 function pad2(n: number) {
   return String(Math.floor(Math.abs(n))).padStart(2, '0');
 }
@@ -39,20 +36,16 @@ function parseTime(raw: string): string | null {
   if (m) {
     const h = Number(m[1]);
     const min = Number(m[2]);
-    if (h >= 0 && h <= 23 && min >= 0 && min <= 59) {
-      return pad2(h) + ':' + pad2(min);
-    }
+    if (h >= 0 && h <= 23 && min >= 0 && min <= 59) return pad2(h) + ':' + pad2(min);
     return null;
   }
   const d = s.replace(/\D/g, '');
   if (d.length === 3 || d.length === 4) {
     const h = Number(d.slice(0, d.length - 2));
     const min = Number(d.slice(-2));
-    if (h >= 0 && h <= 23 && min >= 0 && min <= 59) {
-      return pad2(h) + ':' + pad2(min);
-    }
+    if (h >= 0 && h <= 23 && min >= 0 && min <= 59) return pad2(h) + ':' + pad2(min);
   }
-  if (d.length === 1 || d.length === 2) {
+  if (d.length <= 2) {
     const h = Number(d);
     if (h >= 0 && h <= 23) return pad2(h) + ':00';
   }
@@ -89,13 +82,7 @@ interface Props {
   readOnly?: boolean;
 }
 
-/**
- * FORM_VERSION = 1.0.3
- * Duration = free text input (NO <select>, NO dropdown 15/30/60).
- * End time = free text input (NO type="time" clock picker required).
- * If the live site still shows a dropdown "15 мин…180 мин" —
- * GitHub still has the OLD AppointmentForm.tsx. Replace the whole file.
- */
+/** Compact form: no duration / address / client email / internal notes */
 export function AppointmentForm({
   initialDate,
   existing,
@@ -104,77 +91,24 @@ export function AppointmentForm({
   readOnly,
 }: Props) {
   const { profile } = useAuth();
-
   const start0 = existing?.startTime || '10:00';
-  const end0 = existing?.endTime || addMin(start0, existing?.durationMinutes || 60);
-  const dur0 =
-    existing && existing.durationMinutes > 0
-      ? existing.durationMinutes
-      : diffMin(start0, end0);
+  const end0 = existing?.endTime || addMin(start0, 60);
 
   const [date, setDate] = useState(existing?.date || initialDate);
   const [startText, setStartText] = useState(start0);
   const [endText, setEndText] = useState(end0);
-  const [durText, setDurText] = useState(String(dur0));
-  const [last, setLast] = useState<'start' | 'end' | 'dur'>('dur');
-
   const [masterName, setMasterName] = useState(
     existing?.masterName || profile?.displayName || ''
   );
   const [clientName, setClientName] = useState(existing?.clientName || '');
   const [clientPhone, setClientPhone] = useState(existing?.clientPhone || '');
-  const [clientEmail, setClientEmail] = useState(existing?.clientEmail || '');
   const [service, setService] = useState(existing?.service || '');
   const [description, setDescription] = useState(existing?.description || '');
   const [status, setStatus] = useState<AppointmentStatus>(existing?.status || 'scheduled');
   const [price, setPrice] = useState(existing?.price ? String(existing.price) : '');
   const [color, setColor] = useState(existing?.color || CARD_COLORS[0]);
-  const [location, setLocation] = useState(existing?.location || '');
-  const [notes, setNotes] = useState(existing?.notes || '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  function onStart(v: string) {
-    setStartText(v);
-    setLast('start');
-    const s = parseTime(v);
-    if (!s) return;
-    if (last === 'end') {
-      const e = parseTime(endText);
-      if (e) setDurText(String(diffMin(s, e)));
-    } else {
-      const d = Math.floor(Number(durText));
-      if (Number.isFinite(d) && d >= 0) setEndText(addMin(s, d));
-    }
-  }
-
-  function onEnd(v: string) {
-    setEndText(v);
-    setLast('end');
-    const e = parseTime(v);
-    const s = parseTime(startText);
-    if (e && s) setDurText(String(diffMin(s, e)));
-  }
-
-  function onDur(v: string) {
-    // only digits, any length — no max
-    if (v !== '' && !/^\d*$/.test(v)) return;
-    setDurText(v);
-    setLast('dur');
-    const s = parseTime(startText);
-    const d = Math.floor(Number(v));
-    if (s && v !== '' && Number.isFinite(d) && d >= 0) {
-      setEndText(addMin(s, d));
-    }
-  }
-
-  function applyHint(mins: number) {
-    setLast('dur');
-    setDurText(String(mins));
-    const s = parseTime(startText) || '10:00';
-    setStartText(s);
-    setEndText(addMin(s, mins));
-  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -183,34 +117,15 @@ export function AppointmentForm({
 
     const start = parseTime(startText);
     if (!start) {
-      setError('Начало: введите время, например 10:00');
+      setError('Начало: например 10:00');
       return;
     }
-
     let end = parseTime(endText);
-    let duration = Math.floor(Number(durText));
-
-    if (last === 'end' && end) {
-      duration = diffMin(start, end);
-    } else if (last === 'dur' && Number.isFinite(duration) && duration >= 0) {
-      if (duration < 1) duration = 1;
-      end = addMin(start, duration);
-    } else if (end) {
-      duration = diffMin(start, end);
-    } else if (Number.isFinite(duration) && duration > 0) {
-      end = addMin(start, duration);
-    } else {
-      setError('Укажите окончание (11:30) или длительность в минутах');
-      return;
-    }
-
     if (!end) {
-      setError('Окончание: введите время, например 11:45');
-      return;
+      end = addMin(start, 60);
     }
-    if (!Number.isFinite(duration) || duration < 1) {
-      duration = diffMin(start, end);
-    }
+    const duration = diffMin(start, end);
+
     if (!clientName.trim()) {
       setError('Укажите имя клиента');
       return;
@@ -227,17 +142,17 @@ export function AppointmentForm({
         startTime: start,
         endTime: end,
         durationMinutes: duration,
-        masterName,
+        masterName: masterName.trim() || profile?.displayName || '',
         clientName: clientName.trim(),
         clientPhone,
-        clientEmail,
+        clientEmail: '',
         service: service.trim(),
         description,
         status,
         price: Number(String(price).replace(',', '.')) || 0,
         color,
-        location,
-        notes,
+        location: '',
+        notes: '',
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка сохранения');
@@ -247,25 +162,7 @@ export function AppointmentForm({
   }
 
   return (
-    <form onSubmit={submit} data-form-version="1.0.3">
-      {/* VISIBLE MARKER — if you do NOT see this green box, old form is still deployed */}
-      <div
-        style={{
-          background: 'rgba(34, 197, 94, 0.15)',
-          border: '1px solid rgba(34, 197, 94, 0.45)',
-          color: '#bbf7d0',
-          borderRadius: 10,
-          padding: '10px 12px',
-          fontSize: '0.8rem',
-          fontWeight: 600,
-          marginBottom: 14,
-          lineHeight: 1.4,
-        }}
-      >
-        Форма v1.0.3 активна. Длительность — любое число минут (не список). Окончание —
-        ввод вручную.
-      </div>
-
+    <form onSubmit={submit} data-form-version="1.1.0">
       {error && (
         <div className="alert alert-error" style={{ marginBottom: 12 }}>
           {error}
@@ -282,19 +179,16 @@ export function AppointmentForm({
             required
           />
         </Field>
-        <Field label="Начало" hint="Напр. 10:00 или 9:30">
+        <Field label="Начало" hint="напр. 10:00">
           <Input
             type="text"
             inputMode="numeric"
             placeholder="10:00"
             value={startText}
-            onChange={(e) => onStart(e.target.value)}
+            onChange={(e) => setStartText(e.target.value)}
             onBlur={() => {
               const t = parseTime(startText);
-              if (t) {
-                setStartText(t);
-                onStart(t);
-              }
+              if (t) setStartText(t);
             }}
             disabled={readOnly}
             autoComplete="off"
@@ -302,51 +196,21 @@ export function AppointmentForm({
         </Field>
       </div>
 
-      {/*
-        CRITICAL: duration must be <input type="text"> — NEVER <select>.
-        End must be type="text" — free typing.
-      */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-        <Field label="Длительность (мин)" hint="Свободно: 75, 200, 480…">
-          <Input
-            type="text"
-            inputMode="numeric"
-            placeholder="60"
-            value={durText}
-            onChange={(e) => onDur(e.target.value)}
-            disabled={readOnly}
-            autoComplete="off"
-          />
-        </Field>
-        <Field label="Окончание" hint="Свободно: 11:45, 14:00…">
-          <Input
-            type="text"
-            inputMode="numeric"
-            placeholder="11:00"
-            value={endText}
-            onChange={(e) => onEnd(e.target.value)}
-            onBlur={() => {
-              const t = parseTime(endText);
-              if (t) {
-                setEndText(t);
-                onEnd(t);
-              }
-            }}
-            disabled={readOnly}
-            autoComplete="off"
-          />
-        </Field>
-      </div>
-
-      {!readOnly && (
-        <div className="chip-row" style={{ marginBottom: 14, marginTop: -4 }}>
-          {HINTS.map((m) => (
-            <button key={m} type="button" className="chip" onClick={() => applyHint(m)}>
-              {m >= 60 ? m / 60 + ' ч' : m + ' м'}
-            </button>
-          ))}
-        </div>
-      )}
+      <Field label="Окончание" hint="напр. 11:30">
+        <Input
+          type="text"
+          inputMode="numeric"
+          placeholder="11:00"
+          value={endText}
+          onChange={(e) => setEndText(e.target.value)}
+          onBlur={() => {
+            const t = parseTime(endText);
+            if (t) setEndText(t);
+          }}
+          disabled={readOnly}
+          autoComplete="off"
+        />
+      </Field>
 
       <Field label="Клиент">
         <Input
@@ -358,28 +222,21 @@ export function AppointmentForm({
         />
       </Field>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-        <Field label="Телефон клиента">
-          <Input
-            value={clientPhone}
-            onChange={(e) => setClientPhone(e.target.value)}
-            placeholder="+7..."
-            disabled={readOnly}
-          />
-        </Field>
-        <Field label="Email клиента">
-          <Input
-            type="email"
-            value={clientEmail}
-            onChange={(e) => setClientEmail(e.target.value)}
-            placeholder="email@..."
-            disabled={readOnly}
-          />
-        </Field>
-      </div>
+      <Field label="Телефон клиента">
+        <Input
+          value={clientPhone}
+          onChange={(e) => setClientPhone(e.target.value)}
+          placeholder="+7..."
+          disabled={readOnly}
+        />
+      </Field>
 
       <Field label="Мастер">
-        <Input value={masterName} onChange={(e) => setMasterName(e.target.value)} disabled={readOnly} />
+        <Input
+          value={masterName}
+          onChange={(e) => setMasterName(e.target.value)}
+          disabled={readOnly}
+        />
       </Field>
 
       <Field label="Вид услуги">
@@ -393,7 +250,11 @@ export function AppointmentForm({
       </Field>
 
       <Field label="Описание">
-        <Textarea value={description} onChange={(e) => setDescription(e.target.value)} disabled={readOnly} />
+        <Textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          disabled={readOnly}
+        />
       </Field>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
@@ -410,7 +271,7 @@ export function AppointmentForm({
             ))}
           </Select>
         </Field>
-        <Field label="Цена, ₽">
+        <Field label="Цена, ₽" hint="Видна только вам">
           <Input
             type="text"
             inputMode="decimal"
@@ -421,14 +282,6 @@ export function AppointmentForm({
           />
         </Field>
       </div>
-
-      <Field label="Адрес / место">
-        <Input value={location} onChange={(e) => setLocation(e.target.value)} disabled={readOnly} />
-      </Field>
-
-      <Field label="Внутренние заметки">
-        <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} disabled={readOnly} />
-      </Field>
 
       <Field label="Цвет карточки">
         <ColorPicker value={color} onChange={(c) => !readOnly && setColor(c)} colors={CARD_COLORS} />
