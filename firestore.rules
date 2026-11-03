@@ -97,9 +97,10 @@ service cloud.firestore {
       );
       let addedSelfEditor = uid() in newEds && !(uid() in oldEds);
       let addedSelfViewer = uid() in newVws && !(uid() in oldVws);
+      let uidPending = uid() in pendingE || uid() in pendingV;
       return isSignedIn()
         && request.resource.data.ownerId == resource.data.ownerId
-        && (emailOk || phoneOk)
+        && (emailOk || phoneOk || uidPending)
         && (addedSelfEditor || addedSelfViewer)
         && !request.resource.data.diff(resource.data).affectedKeys()
             .hasAny(['ownerId', 'name', 'color', 'isPrimary', 'createdAt']);
