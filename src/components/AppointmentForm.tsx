@@ -22,6 +22,17 @@ export type AppointmentFormValues = {
   notes: string;
 };
 
+export type AppointmentFormProps = {
+  initialDate: string;
+  existing?: Appointment | null;
+  onSubmit: (values: AppointmentFormValues) => Promise<void>;
+  onDelete?: () => Promise<void>;
+  readOnly?: boolean;
+  /** Pre-fill when creating from week cell */
+  initialStartTime?: string;
+  initialMasterName?: string;
+};
+
 function pad2(n: number) {
   return String(Math.floor(Math.abs(n))).padStart(2, '0');
 }
@@ -45,7 +56,7 @@ function parseTime(raw: string): string | null {
     const min = Number(d.slice(-2));
     if (h >= 0 && h <= 23 && min >= 0 && min <= 59) return pad2(h) + ':' + pad2(min);
   }
-  if (d.length <= 2) {
+  if (d.length >= 1 && d.length <= 2) {
     const h = Number(d);
     if (h >= 0 && h <= 23) return pad2(h) + ':00';
   }
@@ -74,31 +85,29 @@ function diffMin(start: string, end: string): number {
   return d < 1 ? 1 : d;
 }
 
-interface Props {
-  initialDate: string;
-  existing?: Appointment | null;
-  onSubmit: (values: AppointmentFormValues) => Promise<void>;
-  onDelete?: () => Promise<void>;
-  readOnly?: boolean;
-}
-
-/** Compact form: no duration / address / client email / internal notes */
+/**
+ * FORM v1.2.1
+ * NO: duration field, address, client email, internal notes
+ * YES: initialStartTime, initialMasterName (for week grid create)
+ */
 export function AppointmentForm({
   initialDate,
   existing,
   onSubmit,
   onDelete,
   readOnly,
-}: Props) {
+  initialStartTime,
+  initialMasterName,
+}: AppointmentFormProps) {
   const { profile } = useAuth();
-  const start0 = existing?.startTime || '10:00';
+  const start0 = existing?.startTime || initialStartTime || '10:00';
   const end0 = existing?.endTime || addMin(start0, 60);
 
   const [date, setDate] = useState(existing?.date || initialDate);
   const [startText, setStartText] = useState(start0);
   const [endText, setEndText] = useState(end0);
   const [masterName, setMasterName] = useState(
-    existing?.masterName || profile?.displayName || ''
+    existing?.masterName || initialMasterName || profile?.displayName || ''
   );
   const [clientName, setClientName] = useState(existing?.clientName || '');
   const [clientPhone, setClientPhone] = useState(existing?.clientPhone || '');
@@ -121,9 +130,7 @@ export function AppointmentForm({
       return;
     }
     let end = parseTime(endText);
-    if (!end) {
-      end = addMin(start, 60);
-    }
+    if (!end) end = addMin(start, 60);
     const duration = diffMin(start, end);
 
     if (!clientName.trim()) {
@@ -162,7 +169,22 @@ export function AppointmentForm({
   }
 
   return (
-    <form onSubmit={submit} data-form-version="1.1.0">
+    <form onSubmit={submit} data-form-version="1.2.1">
+      <div
+        style={{
+          background: 'rgba(34,197,94,0.15)',
+          border: '1px solid rgba(34,197,94,0.4)',
+          color: '#bbf7d0',
+          borderRadius: 10,
+          padding: '8px 12px',
+          fontSize: '0.75rem',
+          fontWeight: 700,
+          marginBottom: 12,
+        }}
+      >
+        Форма v1.2.1 — без длительности, адреса, email клиента и заметок
+      </div>
+
       {error && (
         <div className="alert alert-error" style={{ marginBottom: 12 }}>
           {error}
@@ -179,7 +201,7 @@ export function AppointmentForm({
             required
           />
         </Field>
-        <Field label="Начало" hint="напр. 10:00">
+        <Field label="Начало">
           <Input
             type="text"
             inputMode="numeric"
@@ -196,7 +218,7 @@ export function AppointmentForm({
         </Field>
       </div>
 
-      <Field label="Окончание" hint="напр. 11:30">
+      <Field label="Окончание">
         <Input
           type="text"
           inputMode="numeric"
@@ -254,6 +276,7 @@ export function AppointmentForm({
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           disabled={readOnly}
+          placeholder="Кратко — видно в ячейке календаря"
         />
       </Field>
 
@@ -271,7 +294,7 @@ export function AppointmentForm({
             ))}
           </Select>
         </Field>
-        <Field label="Цена, ₽" hint="Видна только вам">
+        <Field label="Цена, ₽" hint="Только вы">
           <Input
             type="text"
             inputMode="decimal"
@@ -283,7 +306,7 @@ export function AppointmentForm({
         </Field>
       </div>
 
-      <Field label="Цвет карточки">
+      <Field label="Цвет в календаре">
         <ColorPicker value={color} onChange={(c) => !readOnly && setColor(c)} colors={CARD_COLORS} />
       </Field>
 
