@@ -28,7 +28,6 @@ export type AppointmentFormProps = {
   onSubmit: (values: AppointmentFormValues) => Promise<void>;
   onDelete?: () => Promise<void>;
   readOnly?: boolean;
-  /** Pre-fill when creating from week cell */
   initialStartTime?: string;
   initialMasterName?: string;
 };
@@ -38,39 +37,36 @@ function pad2(n: number) {
 }
 
 function parseTime(raw: string): string | null {
-  const s = String(raw || '')
-    .trim()
-    .replace(/\./g, ':')
-    .replace(/,/g, ':');
+  const s = String(raw || '').trim().replace(/[.,]/g, ':');
   if (!s) return null;
   const m = s.match(/^(\d{1,2}):(\d{1,2})/);
   if (m) {
     const h = Number(m[1]);
     const min = Number(m[2]);
-    if (h >= 0 && h <= 23 && min >= 0 && min <= 59) return pad2(h) + ':' + pad2(min);
+    if (h >= 0 && h <= 23 && min >= 0 && min <= 59) return `${pad2(h)}:${pad2(min)}`;
     return null;
   }
-  const d = s.replace(/\D/g, '');
-  if (d.length === 3 || d.length === 4) {
-    const h = Number(d.slice(0, d.length - 2));
-    const min = Number(d.slice(-2));
-    if (h >= 0 && h <= 23 && min >= 0 && min <= 59) return pad2(h) + ':' + pad2(min);
+  const digits = s.replace(/\D/g, '');
+  if (digits.length === 3 || digits.length === 4) {
+    const h = Number(digits.slice(0, -2));
+    const min = Number(digits.slice(-2));
+    if (h >= 0 && h <= 23 && min >= 0 && min <= 59) return `${pad2(h)}:${pad2(min)}`;
   }
-  if (d.length >= 1 && d.length <= 2) {
-    const h = Number(d);
-    if (h >= 0 && h <= 23) return pad2(h) + ':00';
+  if (digits.length > 0 && digits.length <= 2) {
+    const h = Number(digits);
+    if (h >= 0 && h <= 23) return `${pad2(h)}:00`;
   }
   return null;
 }
 
 function toMin(t: string): number {
-  const p = String(t).split(':');
-  return (Number(p[0]) || 0) * 60 + (Number(p[1]) || 0);
+  const [h, m] = t.split(':').map(Number);
+  return (h || 0) * 60 + (m || 0);
 }
 
 function fromMin(total: number): string {
-  const x = ((Math.floor(total) % 1440) + 1440) % 1440;
-  return pad2(Math.floor(x / 60)) + ':' + pad2(x % 60);
+  const t = ((Math.floor(total) % 1440) + 1440) % 1440;
+  return `${pad2(Math.floor(t / 60))}:${pad2(t % 60)}`;
 }
 
 function addMin(start: string, mins: number): string {
@@ -81,15 +77,9 @@ function diffMin(start: string, end: string): number {
   let a = toMin(start);
   let b = toMin(end);
   if (b < a) b += 1440;
-  const d = b - a;
-  return d < 1 ? 1 : d;
+  return Math.max(1, b - a);
 }
 
-/**
- * FORM v1.2.1
- * NO: duration field, address, client email, internal notes
- * YES: initialStartTime, initialMasterName (for week grid create)
- */
 export function AppointmentForm({
   initialDate,
   existing,
@@ -102,18 +92,15 @@ export function AppointmentForm({
   const { profile } = useAuth();
   const start0 = existing?.startTime || initialStartTime || '10:00';
   const end0 = existing?.endTime || addMin(start0, 60);
-
   const [date, setDate] = useState(existing?.date || initialDate);
   const [startText, setStartText] = useState(start0);
   const [endText, setEndText] = useState(end0);
-  const [masterName, setMasterName] = useState(
-    existing?.masterName || initialMasterName || profile?.displayName || ''
-  );
+  const [masterName, setMasterName] = useState(existing?.masterName || initialMasterName || profile?.displayName || '');
   const [clientName, setClientName] = useState(existing?.clientName || '');
   const [clientPhone, setClientPhone] = useState(existing?.clientPhone || '');
   const [service, setService] = useState(existing?.service || '');
   const [description, setDescription] = useState(existing?.description || '');
-  const [status, setStatus] = useState<AppointmentStatus>(existing?.status || 'scheduled');
+  const status: AppointmentStatus = existing?.status || 'scheduled';
   const [price, setPrice] = useState(existing?.price ? String(existing.price) : '');
   const [color, setColor] = useState(existing?.color || CARD_COLORS[0]);
   const [saving, setSaving] = useState(false);
@@ -123,24 +110,11 @@ export function AppointmentForm({
     e.preventDefault();
     if (readOnly) return;
     setError(null);
-
     const start = parseTime(startText);
-    if (!start) {
-      setError('Начало: например 10:00');
-      return;
-    }
-    let end = parseTime(endText);
-    if (!end) end = addMin(start, 60);
-    const duration = diffMin(start, end);
-
-    if (!clientName.trim()) {
-      setError('Укажите имя клиента');
-      return;
-    }
-    if (!service.trim()) {
-      setError('Укажите вид услуги');
-      return;
-    }
+    if (!start) return setError('Начало: например 10:00');
+    const end = parseTime(endText) || addMin(start, 60);
+    if (!clientName.trim()) return setError('Укажите имя клиента');
+    if (!service.trim()) return setError('Укажите вид услуги');
 
     setSaving(true);
     try {
@@ -148,7 +122,7 @@ export function AppointmentForm({
         date,
         startTime: start,
         endTime: end,
-        durationMinutes: duration,
+        durationMinutes: diffMin(start, end),
         masterName: masterName.trim() || profile?.displayName || '',
         clientName: clientName.trim(),
         clientPhone,
@@ -169,143 +143,39 @@ export function AppointmentForm({
   }
 
   return (
-    <form onSubmit={submit} data-form-version="1.2.1">
-      <div
-        style={{
-          background: 'rgba(34,197,94,0.15)',
-          border: '1px solid rgba(34,197,94,0.4)',
-          color: '#bbf7d0',
-          borderRadius: 10,
-          padding: '8px 12px',
-          fontSize: '0.75rem',
-          fontWeight: 700,
-          marginBottom: 12,
-        }}
-      >
-        Форма v1.2.1 — без длительности, адреса, email клиента и заметок
-      </div>
+    <form onSubmit={submit} data-form-version="1.3.0">
+      <div className="form-version-tag">Форма v1.3.0 — без поля «Статус»</div>
+      {error && <div className="alert alert-error">{error}</div>}
 
-      {error && (
-        <div className="alert alert-error" style={{ marginBottom: 12 }}>
-          {error}
-        </div>
-      )}
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+      <div className="form-grid-two">
         <Field label="Дата">
-          <Input
-            type="date"
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-            disabled={readOnly}
-            required
-          />
+          <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} disabled={readOnly} required />
         </Field>
         <Field label="Начало">
-          <Input
-            type="text"
-            inputMode="numeric"
-            placeholder="10:00"
-            value={startText}
-            onChange={(e) => setStartText(e.target.value)}
-            onBlur={() => {
-              const t = parseTime(startText);
-              if (t) setStartText(t);
-            }}
-            disabled={readOnly}
-            autoComplete="off"
-          />
+          <Input type="text" inputMode="numeric" placeholder="10:00" value={startText} onChange={(e) => setStartText(e.target.value)} onBlur={() => { const t = parseTime(startText); if (t) setStartText(t); }} disabled={readOnly} autoComplete="off" />
         </Field>
       </div>
-
       <Field label="Окончание">
-        <Input
-          type="text"
-          inputMode="numeric"
-          placeholder="11:00"
-          value={endText}
-          onChange={(e) => setEndText(e.target.value)}
-          onBlur={() => {
-            const t = parseTime(endText);
-            if (t) setEndText(t);
-          }}
-          disabled={readOnly}
-          autoComplete="off"
-        />
+        <Input type="text" inputMode="numeric" placeholder="11:00" value={endText} onChange={(e) => setEndText(e.target.value)} onBlur={() => { const t = parseTime(endText); if (t) setEndText(t); }} disabled={readOnly} autoComplete="off" />
       </Field>
-
       <Field label="Клиент">
-        <Input
-          value={clientName}
-          onChange={(e) => setClientName(e.target.value)}
-          placeholder="Имя клиента"
-          disabled={readOnly}
-          required
-        />
+        <Input value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="Имя клиента" disabled={readOnly} required />
       </Field>
-
       <Field label="Телефон клиента">
-        <Input
-          value={clientPhone}
-          onChange={(e) => setClientPhone(e.target.value)}
-          placeholder="+7..."
-          disabled={readOnly}
-        />
+        <Input value={clientPhone} onChange={(e) => setClientPhone(e.target.value)} placeholder="+7..." disabled={readOnly} />
       </Field>
-
       <Field label="Мастер">
-        <Input
-          value={masterName}
-          onChange={(e) => setMasterName(e.target.value)}
-          disabled={readOnly}
-        />
+        <Input value={masterName} onChange={(e) => setMasterName(e.target.value)} disabled={readOnly} />
       </Field>
-
       <Field label="Вид услуги">
-        <Input
-          value={service}
-          onChange={(e) => setService(e.target.value)}
-          placeholder="Стрижка, маникюр..."
-          disabled={readOnly}
-          required
-        />
+        <Input value={service} onChange={(e) => setService(e.target.value)} placeholder="Стрижка, маникюр..." disabled={readOnly} required />
       </Field>
-
       <Field label="Описание">
-        <Textarea
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          disabled={readOnly}
-          placeholder="Кратко — видно в ячейке календаря"
-        />
+        <Textarea value={description} onChange={(e) => setDescription(e.target.value)} disabled={readOnly} placeholder="Кратко — видно в ячейке календаря" />
       </Field>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-        <Field label="Статус">
-          <Select
-            value={status}
-            onChange={(e) => setStatus(e.target.value as AppointmentStatus)}
-            disabled={readOnly}
-          >
-            {Object.entries(STATUS_LABELS).map(([k, v]) => (
-              <option key={k} value={k}>
-                {v}
-              </option>
-            ))}
-          </Select>
-        </Field>
-        <Field label="Цена, ₽" hint="Только вы">
-          <Input
-            type="text"
-            inputMode="decimal"
-            value={price}
-            onChange={(e) => setPrice(e.target.value.replace(/[^\d.,]/g, ''))}
-            placeholder="0"
-            disabled={readOnly}
-          />
-        </Field>
-      </div>
-
+      <Field label="Цена, ₽" hint="Только вы">
+        <Input type="text" inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value.replace(/[^\d.,]/g, ''))} placeholder="0" disabled={readOnly} />
+      </Field>
       <Field label="Цвет в календаре">
         <ColorPicker value={color} onChange={(c) => !readOnly && setColor(c)} colors={CARD_COLORS} />
       </Field>
@@ -313,26 +183,13 @@ export function AppointmentForm({
       {!readOnly && (
         <div className="btn-row" style={{ marginTop: 8 }}>
           {existing && onDelete && (
-            <Button
-              type="button"
-              variant="danger"
-              disabled={saving}
-              onClick={async () => {
-                if (!confirm('Удалить запись?')) return;
-                setSaving(true);
-                try {
-                  await onDelete();
-                } finally {
-                  setSaving(false);
-                }
-              }}
-            >
-              Удалить
-            </Button>
+            <Button type="button" variant="danger" disabled={saving} onClick={async () => {
+              if (!confirm('Удалить запись?')) return;
+              setSaving(true);
+              try { await onDelete(); } finally { setSaving(false); }
+            }}>Удалить</Button>
           )}
-          <Button type="submit" disabled={saving}>
-            {saving ? 'Сохранение…' : existing ? 'Сохранить' : 'Создать запись'}
-          </Button>
+          <Button type="submit" disabled={saving}>{saving ? 'Сохранение…' : existing ? 'Сохранить' : 'Создать запись'}</Button>
         </div>
       )}
     </form>

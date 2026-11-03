@@ -1,23 +1,110 @@
 import { useMemo } from 'react';
-import {
-  addDays,
-  startOfWeek,
-  isSameDay,
-  format,
-  parseISO,
-} from 'date-fns';
+import { addDays, startOfWeek, isSameDay, format } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import type { Appointment } from '../types';
 import { toDateKey, formatRu } from '../lib/dates';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 
-const HOUR_START = 8;
-const HOUR_END = 21; // exclusive end for rows: 8..20 = slots until 21:00
-const HOURS = Array.from({ length: HOUR_END - HOUR_START }, (_, i) => HOUR_START + i);
+const DAY_START_MIN = 8 * 60;
+const DAY_END_MIN = 21 * 60;
+const HOUR_COUNT = 13;
+const ROW_HEIGHT = 64;
 
-function timeToHour(t: string): number {
-  const h = Number(String(t).split(':')[0]) || 0;
-  return h;
+function minutesOf(time: string | undefined, fallback: number): number {
+  if (!time) return fallback;
+  const [h, m] = time.split(':').map(Number);
+  if (!Number.isFinite(h)) return fallback;
+  return h * 60 + (Number.isFinite(m) ? m : 0);
+}
+
+function durationOf(a: Appointment): number {
+  const start = minutesOf(a.startTime, DAY_START_MIN);
+  let end = a.endTime ? minutesOf(a.endTime, start + 60) : start + (a.durationMinutes || 60);
+  if (end <= start) end += 24 * 60;
+  return Math.max(15, end - start);
+}
+
+function buildLanes(list: Appointment[]) {
+  const sorted = [...list].sort((a, b) => a.startTime.localeCompare(b.startTime));
+  const laneEnds: number[] = [];
+  const items = sorted.map((apt) => {
+    const start = minutesOf(apt.startTime, DAY_START_MIN);
+    const end = start + durationOf(apt);
+    let lane = laneEnds.findIndex((laneEnd) => laneEnd <= start);
+    if (lane < 0) lane = laneEnds.length;
+    laneEnds[lane] = end;
+    return { apt, lane };
+  });
+  const laneCount = Math.max(1, laneEnds.length);
+  return items.map((item) => ({ ...item, laneCount }));
+}
+
+function Timeline({
+  day,
+  appointments,
+  onOpenAppointment,
+  onCreateAt,
+  canOpen,
+  compact = false,
+}: {
+  day: Date;
+  appointments: Appointment[];
+  onOpenAppointment: (a: Appointment) => void;
+  onCreateAt?: (hour: number) => void;
+  canOpen: (a: Appointment) => boolean;
+  compact?: boolean;
+}) {
+  const key = toDateKey(day);
+  const items = useMemo(() => buildLanes(appointments.filter((a) => a.date === key)), [appointments, key]);
+  const rowHeight = compact ? ROW_HEIGHT : 58;
+  const totalHeight = HOUR_COUNT * rowHeight;
+
+  return (
+    <div className={`timeline ${compact ? 'timeline-compact' : ''}`} style={{ height: totalHeight }}>
+      <div className="timeline-slots">
+        {Array.from({ length: HOUR_COUNT }, (_, i) => {
+          const hour = i + 8;
+          return (
+            <button
+              key={hour}
+              type="button"
+              className="timeline-slot"
+              style={{ top: i * rowHeight, height: rowHeight }}
+              aria-label={`Создать запись ${hour}:00`}
+              onClick={() => onCreateAt?.(hour)}
+            />
+          );
+        })}
+      </div>
+      {items.map(({ apt, lane, laneCount }) => {
+        const start = minutesOf(apt.startTime, DAY_START_MIN);
+        const end = start + durationOf(apt);
+        const visibleStart = Math.max(DAY_START_MIN, start);
+        const visibleEnd = Math.min(DAY_END_MIN, end);
+        if (visibleEnd <= visibleStart) return null;
+
+        const top = ((visibleStart - DAY_START_MIN) / 60) * rowHeight;
+        const height = Math.max(34, ((visibleEnd - visibleStart) / 60) * rowHeight);
+        const gap = 4;
+        const width = `calc(${100 / laneCount}% - ${laneCount > 1 ? gap : 0}px)`;
+        const left = `calc(${(lane * 100) / laneCount}% + ${lane > 0 ? gap / 2 : 0}px)`;
+        return (
+          <button
+            key={apt.id}
+            type="button"
+            className="timeline-event"
+            style={{ top, height, left, width, background: apt.color || '#6366f1', cursor: canOpen(apt) ? 'pointer' : 'default' }}
+            onClick={() => canOpen(apt) && onOpenAppointment(apt)}
+            title={`${apt.startTime}–${apt.endTime} · ${apt.masterName} · ${apt.description || apt.service}`}
+          >
+            <span className="timeline-event-time">{apt.startTime}–{apt.endTime}</span>
+            <span className="timeline-event-master">{apt.masterName || 'Мастер'}</span>
+            <span className="timeline-event-desc">{apt.description || apt.service || apt.clientName}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 export function WeekCalendar({
@@ -26,7 +113,7 @@ export function WeekCalendar({
   selected,
   onSelectDay,
   appointments,
-  masters,
+  masters: _masters,
   onOpenAppointment,
   onCreateAt,
   canOpen,
@@ -36,157 +123,68 @@ export function WeekCalendar({
   selected: Date;
   onSelectDay: (d: Date) => void;
   appointments: Appointment[];
-  /** Unique master names for columns (optional multi-master). If empty — single column «Все». */
   masters: string[];
   onOpenAppointment: (a: Appointment) => void;
   onCreateAt?: (dateKey: string, hour: number, masterName: string) => void;
   canOpen: (a: Appointment) => boolean;
 }) {
   const weekStart = startOfWeek(weekAnchor, { weekStartsOn: 1 });
-  const days = useMemo(
-    () => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)),
-    [weekStart.getTime()]
-  );
-
-  const masterCols = masters.length > 0 ? masters : ['Все'];
-
-  // Group apts by dateKey
-  const byDay = useMemo(() => {
-    const m: Record<string, Appointment[]> = {};
-    for (const a of appointments) {
-      (m[a.date] ||= []).push(a);
-    }
-    return m;
-  }, [appointments]);
-
-  function aptsFor(day: Date, hour: number, master: string): Appointment[] {
-    const key = toDateKey(day);
-    const list = byDay[key] || [];
-    return list.filter((a) => {
-      const h = timeToHour(a.startTime);
-      if (h !== hour) return false;
-      if (master === 'Все') return true;
-      return (a.masterName || '').trim() === master || (!a.masterName && master === masters[0]);
-    });
-  }
+  const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart.getTime()]);
 
   return (
-    <div className="week-wrap card" style={{ padding: 0, overflow: 'hidden' }}>
-      <div className="cal-header" style={{ padding: '10px 12px' }}>
-        <button
-          type="button"
-          className="icon-btn"
-          aria-label="Предыдущая неделя"
-          onClick={() => onWeekChange(addDays(weekAnchor, -7))}
-        >
+    <div className="week-board card">
+      <div className="week-toolbar">
+        <button type="button" className="icon-btn" aria-label="Предыдущая неделя" onClick={() => onWeekChange(addDays(weekAnchor, -7))}>
           <ChevronLeft size={18} />
         </button>
-        <div className="cal-title" style={{ fontSize: '0.95rem' }}>
-          {formatRu(days[0], 'd MMM')} – {formatRu(days[6], 'd MMM yyyy')}
+        <div className="week-toolbar-title">
+          <span className="week-toolbar-eyebrow">РАСПИСАНИЕ</span>
+          <strong>{formatRu(days[0], 'd MMMM')} – {formatRu(days[6], 'd MMMM yyyy')}</strong>
         </div>
-        <button
-          type="button"
-          className="icon-btn"
-          aria-label="Следующая неделя"
-          onClick={() => onWeekChange(addDays(weekAnchor, 7))}
-        >
+        <button type="button" className="icon-btn" aria-label="Следующая неделя" onClick={() => onWeekChange(addDays(weekAnchor, 7))}>
           <ChevronRight size={18} />
         </button>
       </div>
 
-      <div className="week-scroll">
-        <table className="week-table">
-          <thead>
-            <tr>
-              <th className="week-th-time">Время</th>
-              {days.map((d) => {
-                const sel = isSameDay(d, selected);
-                const today = isSameDay(d, new Date());
-                return (
-                  <th
-                    key={toDateKey(d)}
-                    className={`week-th-day ${sel ? 'selected' : ''} ${today ? 'today' : ''}`}
-                    colSpan={masterCols.length}
-                  >
-                    <button type="button" className="week-day-btn" onClick={() => onSelectDay(d)}>
-                      <span className="week-day-name">{format(d, 'EEEEEE', { locale: ru })}</span>
-                      <span className="week-day-num">{format(d, 'd')}</span>
-                    </button>
-                  </th>
-                );
-              })}
-            </tr>
-            {masterCols.length > 1 && (
-              <tr>
-                <th className="week-th-time" />
-                {days.map((d) =>
-                  masterCols.map((m) => (
-                    <th key={toDateKey(d) + m} className="week-th-master">
-                      {m}
-                    </th>
-                  ))
-                )}
-              </tr>
-            )}
-          </thead>
-          <tbody>
-            {HOURS.map((hour) => (
-              <tr key={hour}>
-                <td className="week-td-time">{pad2(hour)}:00</td>
-                {days.map((d) =>
-                  masterCols.map((master) => {
-                    const list = aptsFor(d, hour, master);
-                    const dk = toDateKey(d);
-                    return (
-                      <td
-                        key={dk + master + hour}
-                        className="week-td-cell"
-                        onClick={() => {
-                          if (list.length === 0 && onCreateAt) {
-                            onCreateAt(dk, hour, master === 'Все' ? '' : master);
-                          }
-                        }}
-                      >
-                        {list.map((a) => (
-                          <button
-                            key={a.id}
-                            type="button"
-                            className="week-event"
-                            style={{
-                              background: a.color || '#6366f1',
-                              cursor: canOpen(a) ? 'pointer' : 'default',
-                              opacity: canOpen(a) ? 1 : 0.85,
-                            }}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (canOpen(a)) onOpenAppointment(a);
-                            }}
-                            title={`${a.startTime}-${a.endTime} ${a.masterName} ${a.description || a.service}`}
-                          >
-                            <div className="week-event-time">
-                              {a.startTime}–{a.endTime}
-                            </div>
-                            <div className="week-event-master">{a.masterName || '—'}</div>
-                            <div className="week-event-desc">
-                              {a.description || a.service || a.clientName}
-                            </div>
-                          </button>
-                        ))}
-                      </td>
-                    );
-                  })
-                )}
-              </tr>
+      <div className="week-board-scroll">
+        <div className="week-board-grid">
+          <div className="week-time-head">ВРЕМЯ</div>
+          {days.map((day) => (
+            <button
+              type="button"
+              key={toDateKey(day)}
+              className={`week-day-head ${isSameDay(day, new Date()) ? 'is-today' : ''} ${isSameDay(day, selected) ? 'is-selected' : ''}`}
+              onClick={() => onSelectDay(day)}
+            >
+              <span>{format(day, 'EEEE', { locale: ru })}</span>
+              <strong>{format(day, 'd')}</strong>
+              <small>{format(day, 'MMM', { locale: ru })}</small>
+            </button>
+          ))}
+          <div className="week-time-axis">
+            {Array.from({ length: HOUR_COUNT }, (_, i) => (
+              <div className="week-hour-label" key={i}>{String(i + 8).padStart(2, '0')}:00</div>
             ))}
-          </tbody>
-        </table>
+          </div>
+          {days.map((day) => (
+            <Timeline
+              key={toDateKey(day)}
+              day={day}
+              appointments={appointments}
+              onOpenAppointment={onOpenAppointment}
+              onCreateAt={(hour) => onCreateAt?.(toDateKey(day), hour, '')}
+              canOpen={canOpen}
+              compact
+            />
+          ))}
+        </div>
+      </div>
+      <div className="week-board-footer">
+        <span className="week-legend-dot" /> Цвет блока соответствует цвету записи
+        <span className="week-legend-sep">·</span> Блок растягивается от начала до окончания
       </div>
     </div>
   );
-}
-
-function pad2(n: number) {
-  return String(n).padStart(2, '0');
 }
 
 export function DayHourGrid({
@@ -202,55 +200,26 @@ export function DayHourGrid({
   onCreateAt?: (hour: number) => void;
   canOpen: (a: Appointment) => boolean;
 }) {
-  const key = toDateKey(day);
-  const list = appointments.filter((a) => a.date === key);
-
   return (
-    <div className="day-hour-grid">
-      <h3 style={{ margin: '0 0 10px' }}>{formatRu(day, 'd MMMM yyyy, EEEE')}</h3>
-      <p className="muted" style={{ fontSize: '0.8rem' }}>
-        Часы 08:00–21:00. Нажмите на пустой час, чтобы создать запись.
-      </p>
-      {HOURS.map((hour) => {
-        const slot = list.filter((a) => timeToHour(a.startTime) === hour);
-        return (
-          <div key={hour} className="day-hour-row">
-            <div className="day-hour-label">{pad2(hour)}:00</div>
-            <div
-              className="day-hour-slots"
-              onClick={() => {
-                if (slot.length === 0 && onCreateAt) onCreateAt(hour);
-              }}
-            >
-              {slot.length === 0 && <span className="muted">свободно</span>}
-              {slot.map((a) => (
-                <button
-                  key={a.id}
-                  type="button"
-                  className="week-event"
-                  style={{
-                    background: a.color || '#6366f1',
-                    cursor: canOpen(a) ? 'pointer' : 'default',
-                  }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (canOpen(a)) onOpenAppointment(a);
-                  }}
-                >
-                  <div className="week-event-time">
-                    {a.startTime}–{a.endTime}
-                  </div>
-                  <div className="week-event-master">{a.masterName}</div>
-                  <div className="week-event-desc">{a.description || a.service}</div>
-                </button>
-              ))}
-            </div>
-          </div>
-        );
-      })}
+    <div className="day-timeline-wrap">
+      <div className="day-timeline-heading">
+        <span className="day-timeline-date">{formatRu(day, 'EEEE, d MMMM yyyy')}</span>
+        <span className="day-timeline-hours">08:00 — 21:00</span>
+      </div>
+      <div className="day-timeline-layout">
+        <div className="day-time-axis">
+          {Array.from({ length: HOUR_COUNT }, (_, i) => (
+            <div className="day-hour-label" key={i}>{String(i + 8).padStart(2, '0')}:00</div>
+          ))}
+        </div>
+        <Timeline
+          day={day}
+          appointments={appointments}
+          onOpenAppointment={onOpenAppointment}
+          onCreateAt={onCreateAt}
+          canOpen={canOpen}
+        />
+      </div>
     </div>
   );
 }
-
-// silence unused
-void parseISO;
