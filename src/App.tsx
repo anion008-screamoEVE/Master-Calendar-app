@@ -9,6 +9,7 @@ import { SubscriptionPage } from './pages/SubscriptionPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { BottomNav } from './components/BottomNav';
 import { Spinner } from './components/ui';
+import { ThemeProvider } from './contexts/ThemeContext';
 
 function Protected({ children }: { children: ReactNode }) {
   const { firebaseUser, profile, loading } = useAuth();
@@ -61,6 +62,7 @@ function CompleteProfileGate({ children }: { children: ReactNode }) {
 export default function App() {
   return (
     <BrowserRouter>
+      <ThemeProvider>
       <AuthProvider>
         <Routes>
           <Route
@@ -132,6 +134,7 @@ export default function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>
+      </ThemeProvider>
     </BrowserRouter>
   );
 }

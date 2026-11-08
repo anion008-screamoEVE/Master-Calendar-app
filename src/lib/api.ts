@@ -304,25 +304,55 @@ export async function findUserByPhone(phone: string): Promise<AppUser | null> {
   return null;
 }
 
+export async function findUserByTelegram(identifier: string): Promise<AppUser | null> {
+  const raw = identifier.trim().replace(/^@/, '');
+  if (!raw) return null;
+  // Telegram-auth users use Firebase uid tg_<telegram-id> and store telegramId.
+  if (/^\d+$/.test(raw)) {
+    const uidSnap = await getDoc(doc(db, 'users', `tg_${raw}`));
+    if (uidSnap.exists()) return mapUser(uidSnap.id, uidSnap.data() as Record<string, unknown>);
+    const byId = await getDocs(query(collection(db, 'users'), where('telegramId', '==', raw)));
+    if (!byId.empty) {
+      const d = byId.docs[0];
+      return mapUser(d.id, d.data() as Record<string, unknown>);
+    }
+    return null;
+  }
+  const usernameVariants = Array.from(new Set([raw, raw.toLowerCase()]));
+  for (const username of usernameVariants) {
+    const byUsername = await getDocs(query(collection(db, 'users'), where('telegramUsername', '==', username)));
+    if (!byUsername.empty) {
+      const d = byUsername.docs[0];
+      return mapUser(d.id, d.data() as Record<string, unknown>);
+    }
+  }
+  return null;
+}
+
 export async function shareCalendar(
   calendarId: string,
   calendarName: string,
   fromUid: string,
   fromName: string,
-  target: { email?: string; phone?: string },
+  target: { email?: string; phone?: string; telegram?: string },
   permission: 'edit' | 'view'
 ) {
   const toEmail = target.email ? normalizeShareEmail(target.email) : null;
   const toPhone = target.phone ? normalizeSharePhone(target.phone) : null;
-  if (!toEmail && !toPhone) {
-    throw new Error('Укажите email или телефон получателя');
+  const toTelegram = target.telegram ? target.telegram.trim().replace(/^@/, '').toLowerCase() : null;
+  if (!toEmail && !toPhone && !toTelegram) {
+    throw new Error('Укажите email, телефон или Telegram username / ID');
   }
 
   let toUid: string | null = null;
   let targetUser: AppUser | null = null;
   if (toEmail) targetUser = await findUserByEmail(toEmail);
   if (!targetUser && toPhone) targetUser = await findUserByPhone(toPhone);
+  if (!targetUser && toTelegram) targetUser = await findUserByTelegram(toTelegram);
   if (targetUser) toUid = targetUser.uid;
+  if (toTelegram && !targetUser) {
+    throw new Error('Telegram-получатель не найден. Получатель должен хотя бы один раз войти в приложение через Telegram, затем пришлите его @username или Telegram ID.');
+  }
 
   const ref = doc(collection(db, 'shares'));
   await setDoc(ref, {
@@ -332,6 +362,7 @@ export async function shareCalendar(
     fromName,
     toEmail,
     toPhone,
+    toTelegram,
     toUid,
     permission,
     status: 'pending',
@@ -339,7 +370,7 @@ export async function shareCalendar(
   });
 
   const field = permission === 'edit' ? 'pendingEditors' : 'pendingViewers';
-  const pendingValues = [toEmail, toPhone].filter(Boolean) as string[];
+  const pendingValues = [toEmail, toPhone, toUid].filter(Boolean) as string[];
   if (pendingValues.length) {
     await updateDoc(doc(db, 'calendars', calendarId), {
       [field]: arrayUnion(...pendingValues),
@@ -379,6 +410,7 @@ export async function acceptShare(
   const pendingClean = [
     data.toEmail,
     data.toPhone,
+    uid,
     profile?.email ? normalizeShareEmail(profile.email) : null,
     profile?.phone ? normalizeSharePhone(profile.phone) : null,
   ].filter(Boolean) as string[];
@@ -429,6 +461,7 @@ export function subscribePendingShares(
     fromName: (data.fromName as string) || '',
     toEmail: (data.toEmail as string) || null,
     toPhone: (data.toPhone as string) || null,
+    toTelegram: (data.toTelegram as string) || null,
     toUid: (data.toUid as string) || null,
     permission: data.permission as 'edit' | 'view',
     status: data.status as ShareInvite['status'],

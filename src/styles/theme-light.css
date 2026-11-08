@@ -1,0 +1,71 @@
+/* Light theme palette */
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: #f3f6fb;
+  --bg-elevated: #ffffff;
+  --bg-card: #ffffff;
+  --bg-soft: #e9eef7;
+  --border: rgba(71, 85, 105, 0.18);
+  --text: #182235;
+  --text-muted: #64748b;
+  --primary: #4f46e5;
+  --primary-hover: #4338ca;
+  --primary-soft: rgba(79, 70, 229, 0.12);
+  --shadow: 0 8px 24px rgba(30, 41, 59, 0.08);
+}
+:root[data-theme='light'] body {
+  background: radial-gradient(1100px 520px at 5% -10%, #dddafe 0%, transparent 55%),
+    radial-gradient(900px 460px at 100% 0%, #ccfbf1 0%, transparent 48%), var(--bg);
+  color: var(--text);
+}
+:root[data-theme='light'] .bottom-nav {
+  background: rgba(255,255,255,.94);
+  border-top-color: rgba(71,85,105,.15);
+  box-shadow: 0 -6px 24px rgba(15,23,42,.06);
+}
+:root[data-theme='light'] .week-board {
+  background: linear-gradient(160deg, rgba(255,255,255,.99), rgba(248,250,255,.99));
+}
+:root[data-theme='light'] .week-toolbar {
+  background: linear-gradient(90deg, rgba(99,102,241,.08), rgba(20,184,166,.04));
+}
+:root[data-theme='light'] .week-time-head,
+:root[data-theme='light'] .week-day-head,
+:root[data-theme='light'] .week-time-axis {
+  background: rgba(255,255,255,.97);
+}
+:root[data-theme='light'] .timeline {
+  background-color: rgba(248,250,252,.86);
+  background-image: repeating-linear-gradient(to bottom, transparent 0, transparent 63px, rgba(100,116,139,.16) 63px, rgba(100,116,139,.16) 64px);
+}
+:root[data-theme='light'] .timeline-event {
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(15,23,42,.14);
+}
+:root[data-theme='light'] .week-event {
+  color: #fff;
+}
+:root[data-theme='light'] .input,
+:root[data-theme='light'] .select,
+:root[data-theme='light'] .textarea {
+  background: #fff;
+  color: #182235;
+}
+:root[data-theme='light'] .role-card,
+:root[data-theme='light'] .day-hour-slots {
+  background: #fff;
+}
+:root[data-theme='light'] .apt-card { background: #fff; }
+:root[data-theme='light'] .overlay { background: rgba(15,23,42,.42); }
+:root[data-theme='light'] .sheet { background: #fff; }
+:root[data-theme='light'] .date-pill,
+:root[data-theme='light'] .icon-btn,
+:root[data-theme='light'] .cal-chip,
+:root[data-theme='light'] .btn-secondary,
+:root[data-theme='light'] .chip { background: #eef2f8; color: #253149; }
+.theme-toggle-row { display:flex; align-items:center; justify-content:space-between; gap:16px; }
+.theme-toggle-copy { display:flex; flex-direction:column; gap:3px; }
+.theme-toggle-title { font-weight:700; }
+.theme-toggle-subtitle { color:var(--text-muted); font-size:.8rem; }
+.tg-share-button { display:flex; align-items:center; justify-content:center; gap:9px; margin-top:10px; min-height:46px; border-radius:12px; color:#fff; background:#229ed9; font-weight:700; }
+.tg-share-button:hover { filter:brightness(1.06); }

@@ -6,10 +6,12 @@ import { usePush } from '../hooks/usePush';
 import { Alert, Button, Field, Input, Select, Switch } from '../components/ui';
 import { subscriptionLabel } from '../lib/subscription';
 import { formatPhoneDisplay } from '../lib/phone';
+import { useTheme } from '../contexts/ThemeContext';
 
 export function SettingsPage() {
   const { profile, firebaseUser, signOut, isMaster, refreshProfile } = useAuth();
   const push = usePush();
+  const { theme, toggleTheme } = useTheme();
   const [name, setName] = useState(profile?.displayName || '');
   const [mins, setMins] = useState(String(profile?.notifyMinutesBefore ?? 60));
   const [msg, setMsg] = useState<string | null>(null);
@@ -42,6 +44,13 @@ export function SettingsPage() {
     <div>
       <h1>Настройки</h1>
       <div className="card">
+        <div className="theme-toggle-row" style={{ marginBottom: 16 }}>
+          <div className="theme-toggle-copy">
+            <span className="theme-toggle-title">Оформление</span>
+            <span className="theme-toggle-subtitle">{theme === 'dark' ? 'Тёмная тема' : 'Светлая тема'}</span>
+          </div>
+          <Switch on={theme === 'light'} onToggle={toggleTheme} label="Переключить светлую тему" />
+        </div>
         <div className="list-item">
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 700 }}>{profile.displayName}</div>

@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import './styles/global.css';
+import './styles/theme-light.css';
 import './styles/calendar-v13.css';
 import { refreshAppCacheOnLaunch } from './lib/cache';
 
