@@ -7,6 +7,7 @@ import { auth as fbAuth, isFirebaseConfigured } from '../lib/firebase';
 import { Scissors, User } from 'lucide-react';
 
 type Mode = 'login' | 'register';
+
 interface TelegramUser {
   id: number;
   first_name?: string;
@@ -20,20 +21,58 @@ interface TelegramUser {
 declare global {
   interface Window {
     onTelegramAuth?: (user: TelegramUser) => void;
+    WebApp?: {
+      initData?: string;
+      initDataUnsafe?: Record<string, unknown>;
+      platform?: string;
+      version?: string;
+      ready?: () => void;
+      expand?: () => void;
+    };
   }
 }
 
-function telegramErrorText(err: unknown): string {
+function authErrorText(err: unknown): string {
   const e = err as { code?: string; message?: string };
   const code = e?.code || '';
   const message = e?.message || '';
+  if (message.includes('getApps is not a function') || message.includes('admin.getApps')) {
+    return 'Сервер Telegram/MAX ещё со старым firebase-admin. Задеплойте новый telegram-auth.js / max-auth.js (v1.5).';
+  }
   if (code === 'auth/invalid-custom-token' || code === 'auth/custom-token-mismatch') {
-    return 'Firebase отклонил Telegram-токен: проверьте, что FIREBASE_SERVICE_ACCOUNT и VITE_FIREBASE_PROJECT_ID принадлежат одному Firebase-проекту. После правки Netlify env нужен новый deploy.';
+    return 'Firebase отклонил токен. FIREBASE_SERVICE_ACCOUNT и VITE_FIREBASE_PROJECT_ID должны быть из одного проекта.';
   }
   if (message.includes('The string did not match the expected pattern')) {
-    return 'Браузер отклонил Telegram/Firebase токен. Проверьте JSON FIREBASE_SERVICE_ACCOUNT, project_id и домен бота в @BotFather (/setdomain). Подробные шаги — SETUP_V12_TELEGRAM_FIX_RU.md.';
+    return 'Браузер отклонил токен. Проверьте service account JSON, project_id и домен бота.';
   }
-  return message || 'Не удалось войти через Telegram';
+  return message || 'Не удалось войти';
+}
+
+function mapAuthError(err: unknown): string {
+  const code = (err as { code?: string })?.code || '';
+  const msg = err instanceof Error ? err.message : 'Ошибка';
+  const map: Record<string, string> = {
+    'auth/email-already-in-use': 'Email уже зарегистрирован',
+    'auth/invalid-email': 'Некорректный email',
+    'auth/weak-password': 'Слабый пароль',
+    'auth/user-not-found': 'Пользователь не найден',
+    'auth/wrong-password': 'Неверный пароль',
+    'auth/invalid-credential': 'Неверный email или пароль',
+  };
+  return map[code] || msg;
+}
+
+async function exchangeProviderToken(endpoint: string, payload: Record<string, unknown>) {
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = (await res.json()) as { token?: string; error?: string };
+  if (!res.ok || !data.token) {
+    throw new Error(data.error || `Auth service HTTP ${res.status}`);
+  }
+  await signInWithCustomToken(fbAuth, data.token);
 }
 
 export function AuthPage() {
@@ -46,7 +85,37 @@ export function AuthPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [tgLoading, setTgLoading] = useState(false);
+  const [maxLoading, setMaxLoading] = useState(false);
+  const [insideMax, setInsideMax] = useState(false);
+
   const botUsername = (import.meta.env.VITE_TELEGRAM_BOT_USERNAME || '').trim().replace(/^@/, '');
+  const maxBotLink = (import.meta.env.VITE_MAX_BOT_LINK || '').trim();
+  const maxEnabled = Boolean(import.meta.env.VITE_MAX_AUTH_ENABLED === 'true' || maxBotLink || import.meta.env.VITE_MAX_BOT_USERNAME);
+
+  useEffect(() => {
+    // Detect MAX mini-app runtime
+    const probe = () => {
+      const wa = window.WebApp;
+      if (wa && (wa.initData || wa.initDataUnsafe)) {
+        setInsideMax(true);
+        try {
+          wa.ready?.();
+          wa.expand?.();
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+    probe();
+    const script = document.createElement('script');
+    script.src = 'https://st.max.ru/js/max-web-app.js';
+    script.async = true;
+    script.onload = probe;
+    document.head.appendChild(script);
+    return () => {
+      script.remove();
+    };
+  }, []);
 
   useEffect(() => {
     if (!botUsername) return;
@@ -56,16 +125,9 @@ export function AuthPage() {
       setError(null);
       try {
         const endpoint = import.meta.env.VITE_TELEGRAM_AUTH_URL || '/.netlify/functions/telegram-auth';
-        const res = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...user, role }),
-        });
-        const data = (await res.json()) as { token?: string; error?: string };
-        if (!res.ok || !data.token) throw new Error(data.error || `Telegram service returned HTTP ${res.status}`);
-        await signInWithCustomToken(fbAuth, data.token);
+        await exchangeProviderToken(endpoint, { ...user, role });
       } catch (e) {
-        setError(telegramErrorText(e));
+        setError(authErrorText(e));
       } finally {
         setTgLoading(false);
       }
@@ -90,6 +152,29 @@ export function AuthPage() {
       mount.innerHTML = '';
     };
   }, [botUsername, role]);
+
+  async function handleMaxLogin() {
+    setError(null);
+    setMaxLoading(true);
+    try {
+      const initData = window.WebApp?.initData || '';
+      if (!initData) {
+        if (maxBotLink) {
+          window.location.href = maxBotLink;
+          return;
+        }
+        throw new Error(
+          'Откройте приложение внутри MAX (мини-приложение бота) или задайте VITE_MAX_BOT_LINK для перехода в MAX.'
+        );
+      }
+      const endpoint = import.meta.env.VITE_MAX_AUTH_URL || '/.netlify/functions/max-auth';
+      await exchangeProviderToken(endpoint, { initData, role });
+    } catch (e) {
+      setError(authErrorText(e));
+    } finally {
+      setMaxLoading(false);
+    }
+  }
 
   if (!isFirebaseConfigured) {
     return (
@@ -122,15 +207,22 @@ export function AuthPage() {
   return (
     <div className="center-page">
       <div className="auth-card">
-        <div className="logo-mark" aria-hidden><Scissors color="white" size={28} /></div>
+        <div className="logo-mark" aria-hidden>
+          <Scissors color="white" size={28} />
+        </div>
         <h1 style={{ textAlign: 'center' }}>Мастер-Календарь</h1>
         <p className="muted" style={{ textAlign: 'center', marginBottom: 20 }}>
-          Email без капчи · Telegram без Blaze SMS
+          Email · Telegram · MAX
         </p>
+
         <div className="card">
           <div className="tabs">
-            <button type="button" className={`tab ${mode === 'login' ? 'active' : ''}`} onClick={() => { setMode('login'); setError(null); }}>Вход</button>
-            <button type="button" className={`tab ${mode === 'register' ? 'active' : ''}`} onClick={() => { setMode('register'); setError(null); }}>Регистрация</button>
+            <button type="button" className={`tab ${mode === 'login' ? 'active' : ''}`} onClick={() => { setMode('login'); setError(null); }}>
+              Вход
+            </button>
+            <button type="button" className={`tab ${mode === 'register' ? 'active' : ''}`} onClick={() => { setMode('register'); setError(null); }}>
+              Регистрация
+            </button>
           </div>
 
           {mode === 'register' && (
@@ -147,40 +239,58 @@ export function AuthPage() {
           )}
 
           {error && <Alert type="error">{error}</Alert>}
-          {tgLoading && <Alert type="info">Подтверждение входа…</Alert>}
+          {(tgLoading || maxLoading) && <Alert type="info">Подтверждение входа…</Alert>}
 
           <form onSubmit={handleEmail}>
-            {mode === 'register' && <Field label="Имя"><Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} required /></Field>}
-            <Field label="Email"><Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" /></Field>
-            <Field label="Пароль" hint="От 6 символов"><Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} /></Field>
-            <Button type="submit" disabled={loading}>{loading ? '…' : mode === 'login' ? 'Войти' : 'Создать аккаунт'}</Button>
+            {mode === 'register' && (
+              <Field label="Имя">
+                <Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} required />
+              </Field>
+            )}
+            <Field label="Email">
+              <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" />
+            </Field>
+            <Field label="Пароль" hint="От 6 символов">
+              <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} />
+            </Field>
+            <Button type="submit" disabled={loading}>
+              {loading ? '…' : mode === 'login' ? 'Войти' : 'Создать аккаунт'}
+            </Button>
           </form>
 
+          {(botUsername || maxEnabled) && <div className="divider">или</div>}
+
           {botUsername && (
-            <>
-              <div className="divider">или</div>
-              <p className="muted" style={{ fontSize: '0.8rem', textAlign: 'center' }}>Бесплатный вход через Telegram</p>
+            <div style={{ marginBottom: 12 }}>
+              <p className="muted" style={{ fontSize: '0.8rem', textAlign: 'center' }}>
+                Бесплатный вход через Telegram
+              </p>
               <div id="telegram-login-mount" className="telegram-login-mount" />
-            </>
+            </div>
+          )}
+
+          {maxEnabled && (
+            <div>
+              <p className="muted" style={{ fontSize: '0.8rem', textAlign: 'center' }}>
+                {insideMax
+                  ? 'Вы открыли приложение внутри MAX — можно войти одним нажатием'
+                  : 'Вход через приложение MAX (мини-приложение бота)'}
+              </p>
+              <button type="button" className="max-login-button" onClick={handleMaxLogin} disabled={maxLoading}>
+                {maxLoading ? 'Вход…' : insideMax ? 'Войти через MAX' : 'Открыть / войти через MAX'}
+              </button>
+              {!insideMax && (
+                <p className="muted" style={{ fontSize: '0.72rem', textAlign: 'center', marginTop: 8 }}>
+                  Для автоматического входа откройте сайт как мини-приложение MAX.
+                  Если задан VITE_MAX_BOT_LINK — кнопка переведёт в MAX.
+                </p>
+              )}
+            </div>
           )}
         </div>
       </div>
     </div>
   );
-}
-
-function mapAuthError(err: unknown): string {
-  const code = (err as { code?: string })?.code || '';
-  const msg = err instanceof Error ? err.message : 'Ошибка';
-  const map: Record<string, string> = {
-    'auth/email-already-in-use': 'Email уже зарегистрирован',
-    'auth/invalid-email': 'Некорректный email',
-    'auth/weak-password': 'Слабый пароль',
-    'auth/user-not-found': 'Пользователь не найден',
-    'auth/wrong-password': 'Неверный пароль',
-    'auth/invalid-credential': 'Неверный email или пароль',
-  };
-  return map[code] || msg;
 }
 
 export function CompleteProfilePage() {
@@ -194,9 +304,13 @@ export function CompleteProfilePage() {
     e.preventDefault();
     setLoading(true);
     setError(null);
-    try { await auth.completeProfile(displayName.trim(), role); }
-    catch (err) { setError(err instanceof Error ? err.message : 'Ошибка'); }
-    finally { setLoading(false); }
+    try {
+      await auth.completeProfile(displayName.trim(), role);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ошибка');
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -206,10 +320,16 @@ export function CompleteProfilePage() {
         {error && <Alert type="error">{error}</Alert>}
         <form onSubmit={submit}>
           <div className="role-grid">
-            <button type="button" className={`role-card ${role === 'master' ? 'active' : ''}`} onClick={() => setRole('master')}><div className="title">Мастер</div></button>
-            <button type="button" className={`role-card ${role === 'client' ? 'active' : ''}`} onClick={() => setRole('client')}><div className="title">Клиент</div></button>
+            <button type="button" className={`role-card ${role === 'master' ? 'active' : ''}`} onClick={() => setRole('master')}>
+              <div className="title">Мастер</div>
+            </button>
+            <button type="button" className={`role-card ${role === 'client' ? 'active' : ''}`} onClick={() => setRole('client')}>
+              <div className="title">Клиент</div>
+            </button>
           </div>
-          <Field label="Имя"><Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} required /></Field>
+          <Field label="Имя">
+            <Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} required />
+          </Field>
           <Button type="submit" disabled={loading}>Далее</Button>
         </form>
       </div>
