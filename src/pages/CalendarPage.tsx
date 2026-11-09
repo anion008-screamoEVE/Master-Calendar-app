@@ -92,24 +92,33 @@ export function CalendarPage() {
 
   const stats = useMemo(() => {
     const uid = firebaseUser?.uid;
-    const mine = (a: Appointment) => !uid || a.createdBy === uid;
+    const myName = (profile?.displayName || '').trim().toLowerCase();
+    // Own appointments: by creator OR by master name (old cards / shared calendars)
+    const mine = (a: Appointment) => {
+      if (a.status === 'cancelled') return false;
+      if (uid && a.createdBy === uid) return true;
+      if (myName && (a.masterName || '').trim().toLowerCase() === myName) return true;
+      return false;
+    };
     const selectedKey = toDateKey(selected);
-    // Month of currently viewed week (weekAnchor)
+    // Month of the week currently shown (changes when user flips weeks / picks date)
     const monthPrefix = format(weekAnchor, 'yyyy-MM');
-    const myCompleted = appointments.filter(
-      (a) => a.status === 'completed' && mine(a)
-    );
-    const dayRevenue = myCompleted
-      .filter((a) => a.date === selectedKey)
-      .reduce((s, a) => s + (Number(a.price) || 0), 0);
-    const monthRevenue = myCompleted
-      .filter((a) => String(a.date || '').startsWith(monthPrefix))
-      .reduce((s, a) => s + (Number(a.price) || 0), 0);
-    const dayCount = appointments.filter(
-      (a) => a.date === selectedKey && a.status !== 'cancelled' && mine(a)
-    ).length;
-    return { dayCount, dayRevenue, monthRevenue, monthPrefix };
-  }, [appointments, firebaseUser?.uid, selected, weekAnchor]);
+    const priceOf = (a: Appointment) => {
+      const n = Number(a.price);
+      return Number.isFinite(n) ? n : 0;
+    };
+    const myApts = appointments.filter(mine);
+    const dayApts = myApts.filter((a) => a.date === selectedKey);
+    const monthAptsMine = myApts.filter((a) => String(a.date || '').startsWith(monthPrefix));
+    const dayRevenue = dayApts.reduce((s, a) => s + priceOf(a), 0);
+    const monthRevenue = monthAptsMine.reduce((s, a) => s + priceOf(a), 0);
+    return {
+      dayCount: dayApts.length,
+      dayRevenue,
+      monthRevenue,
+      monthPrefix,
+    };
+  }, [appointments, firebaseUser?.uid, profile?.displayName, selected, weekAnchor]);
 
   // Month picker needs month range apts — reuse same list if overlaps; else separate
   const [monthApts, setMonthApts] = useState<Appointment[]>([]);
@@ -246,7 +255,7 @@ export function CalendarPage() {
         <div className="stat-row" style={{ gridTemplateColumns: '1fr 1fr 1fr' }}>
           <div className="stat">
             <div className="num">{stats.dayCount}</div>
-            <div className="lbl">мои записи (день)</div>
+            <div className="lbl">записи (выбр. день)</div>
           </div>
           <div className="stat">
             <div className="num">{stats.dayRevenue.toLocaleString('ru-RU')}</div>

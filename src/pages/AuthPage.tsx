@@ -92,6 +92,38 @@ export function AuthPage() {
   const maxBotLink = (import.meta.env.VITE_MAX_BOT_LINK || '').trim();
   const maxEnabled = Boolean(import.meta.env.VITE_MAX_AUTH_ENABLED === 'true' || maxBotLink || import.meta.env.VITE_MAX_BOT_USERNAME);
 
+  // Resume MAX external login if returned via link ?max_session=
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const q = params.get('max_session') || sessionStorage.getItem('max_login_session');
+    if (!q) return;
+    let cancelled = false;
+    (async () => {
+      setMaxLoading(true);
+      setError(null);
+      try {
+        const pr = await fetch(`/.netlify/functions/max-login-poll?session=${encodeURIComponent(q)}`);
+        const pd = (await pr.json()) as { status?: string; token?: string; error?: string };
+        if (cancelled) return;
+        if (pd.status === 'ready' && pd.token) {
+          await signInWithCustomToken(fbAuth, pd.token);
+          sessionStorage.removeItem('max_login_session');
+          // clean query
+          const url = new URL(window.location.href);
+          url.searchParams.delete('max_session');
+          window.history.replaceState({}, '', url.pathname + url.search);
+        }
+      } catch (e) {
+        if (!cancelled) setError(authErrorText(e));
+      } finally {
+        if (!cancelled) setMaxLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     // Detect MAX mini-app runtime
     const probe = () => {
@@ -157,18 +189,66 @@ export function AuthPage() {
     setError(null);
     setMaxLoading(true);
     try {
+      // 1) If already inside MAX mini-app — use initData (optional path)
       const initData = window.WebApp?.initData || '';
-      if (!initData) {
-        if (maxBotLink) {
-          window.location.href = maxBotLink;
-          return;
-        }
-        throw new Error(
-          'Откройте приложение внутри MAX (мини-приложение бота) или задайте VITE_MAX_BOT_LINK для перехода в MAX.'
-        );
+      if (initData) {
+        const endpoint = import.meta.env.VITE_MAX_AUTH_URL || '/.netlify/functions/max-auth';
+        await exchangeProviderToken(endpoint, { initData, role });
+        return;
       }
-      const endpoint = import.meta.env.VITE_MAX_AUTH_URL || '/.netlify/functions/max-auth';
-      await exchangeProviderToken(endpoint, { initData, role });
+
+      // 2) External flow: site stays in browser, user confirms in MAX bot, then returns
+      const startRes = await fetch('/.netlify/functions/max-login-start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role }),
+      });
+      const startData = (await startRes.json()) as {
+        sessionId?: string;
+        botLink?: string;
+        error?: string;
+      };
+      if (!startRes.ok || !startData.sessionId || !startData.botLink) {
+        throw new Error(startData.error || 'Не удалось начать вход через MAX');
+      }
+
+      sessionStorage.setItem('max_login_session', startData.sessionId);
+      // Open MAX bot (app or web). User stays: our tab polls.
+      window.open(startData.botLink, '_blank', 'noopener,noreferrer');
+
+      const sessionId = startData.sessionId;
+      const started = Date.now();
+      await new Promise<void>((resolve, reject) => {
+        const timer = window.setInterval(async () => {
+          try {
+            if (Date.now() - started > 10 * 60 * 1000) {
+              window.clearInterval(timer);
+              reject(new Error('Время входа через MAX истекло. Попробуйте снова.'));
+              return;
+            }
+            const pr = await fetch(
+              `/.netlify/functions/max-login-poll?session=${encodeURIComponent(sessionId)}`
+            );
+            const pd = (await pr.json()) as {
+              status?: string;
+              token?: string;
+              error?: string;
+            };
+            if (pd.status === 'ready' && pd.token) {
+              window.clearInterval(timer);
+              await signInWithCustomToken(fbAuth, pd.token);
+              sessionStorage.removeItem('max_login_session');
+              resolve();
+            } else if (pd.status === 'expired' || pd.status === 'missing') {
+              window.clearInterval(timer);
+              reject(new Error('Сессия MAX истекла. Нажмите «Войти через MAX» снова.'));
+            }
+          } catch (err) {
+            window.clearInterval(timer);
+            reject(err);
+          }
+        }, 2000);
+      });
     } catch (e) {
       setError(authErrorText(e));
     } finally {
@@ -277,14 +357,12 @@ export function AuthPage() {
                   : 'Вход через приложение MAX (мини-приложение бота)'}
               </p>
               <button type="button" className="max-login-button" onClick={handleMaxLogin} disabled={maxLoading}>
-                {maxLoading ? 'Вход…' : insideMax ? 'Войти через MAX' : 'Открыть / войти через MAX'}
+                {maxLoading ? 'Ждём подтверждение в MAX…' : 'Войти через MAX'}
               </button>
-              {!insideMax && (
-                <p className="muted" style={{ fontSize: '0.72rem', textAlign: 'center', marginTop: 8 }}>
-                  Для автоматического входа откройте сайт как мини-приложение MAX.
-                  Если задан VITE_MAX_BOT_LINK — кнопка переведёт в MAX.
-                </p>
-              )}
+              <p className="muted" style={{ fontSize: '0.72rem', textAlign: 'center', marginTop: 8 }}>
+                Откроется MAX-бот для подтверждения. Сайт останется в браузере и войдёт сам
+                после подтверждения (или по ссылке из сообщения бота).
+              </p>
             </div>
           )}
         </div>

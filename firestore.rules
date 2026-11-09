@@ -200,6 +200,12 @@ service cloud.firestore {
       allow update, delete: if isSignedIn() && resource.data.uid == uid();
     }
 
+
+    match /maxLoginSessions/{id} {
+      // Only Cloud/Netlify Admin SDK; clients use functions
+      allow read, write: if false;
+    }
+
     match /payments/{id} {
       allow read: if isSignedIn() && resource.data.uid == uid();
       allow write: if false;
