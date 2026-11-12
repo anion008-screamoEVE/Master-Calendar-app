@@ -119,6 +119,12 @@ export function SharePage() {
     <div>
       <h1>Доступ</h1>
       <p className="muted">Приглашения по email, телефону или Telegram (@username / ID).</p>
+      <div className="alert alert-info" style={{ fontSize: '0.82rem' }}>
+        Приглашая человека в календарь, вы открываете ему записи и связанные поля (в т.ч. имена/телефоны
+        клиентов, которые вы внесли). Убедитесь, что у вас есть основание передавать эти сведения.
+        Платформа не является стороной договора между мастером и клиентом.
+      </div>
+
       {msg && <Alert type="success">{msg}</Alert>}
       {inviteError && <Alert type="error">{inviteError}</Alert>}
 

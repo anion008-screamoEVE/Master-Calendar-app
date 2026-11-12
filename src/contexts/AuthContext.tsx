@@ -11,6 +11,7 @@ import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   signOut as fbSignOut,
+  deleteUser,
   RecaptchaVerifier,
   signInWithPhoneNumber,
   type ConfirmationResult,
@@ -18,7 +19,7 @@ import {
   updateProfile,
 } from 'firebase/auth';
 import { auth, isFirebaseConfigured } from '../lib/firebase';
-import { createUserProfile, getUserProfile, subscribeUser } from '../lib/api';
+import { createUserProfile, getUserProfile, subscribeUser, deleteUserAccountData } from '../lib/api';
 import type { AppUser, UserRole } from '../types';
 import { normalizePhone } from '../lib/phone';
 import { isSubscriptionActive } from '../lib/subscription';
@@ -48,6 +49,7 @@ interface AuthContextValue {
   completeProfile: (displayName: string, role: UserRole) => Promise<void>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
+  deleteAccount: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -152,6 +154,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       async signOut() {
         await fbSignOut(auth);
+        setProfile(null);
+      },
+
+      async deleteAccount() {
+        const u = auth.currentUser;
+        if (!u) throw new Error('Нет пользователя');
+        await deleteUserAccountData(u.uid);
+        try {
+          await deleteUser(u);
+        } catch (e) {
+          const code = (e as { code?: string })?.code;
+          if (code === 'auth/requires-recent-login') {
+            await fbSignOut(auth);
+            setProfile(null);
+            throw new Error(
+              'Данные профиля и записей в облаке удалены. Чтобы стереть вход Firebase, войдите снова в течение минуты и повторите «Удалить аккаунт».'
+            );
+          }
+          throw e;
+        }
         setProfile(null);
       },
 

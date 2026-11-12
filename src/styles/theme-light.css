@@ -69,3 +69,44 @@
 .theme-toggle-subtitle { color:var(--text-muted); font-size:.8rem; }
 .tg-share-button { display:flex; align-items:center; justify-content:center; gap:9px; margin-top:10px; min-height:46px; border-radius:12px; color:#fff; background:#229ed9; font-weight:700; }
 .tg-share-button:hover { filter:brightness(1.06); }
+
+.max-login-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 48px;
+  border-radius: 12px;
+  border: none;
+  color: #fff;
+  font-weight: 700;
+  background: linear-gradient(135deg, #00c2ff, #0077ff);
+  box-shadow: 0 8px 20px rgba(0, 119, 255, 0.25);
+}
+.max-login-button:disabled { opacity: .6; }
+.max-login-button:hover:not(:disabled) { filter: brightness(1.05); }
+
+.consent-box {
+  margin: 12px 0 14px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+.consent-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: 0.82rem;
+  margin-bottom: 8px;
+  color: var(--text);
+  cursor: pointer;
+}
+.consent-row input {
+  margin-top: 3px;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+.legal-body ul { padding-left: 1.2rem; }

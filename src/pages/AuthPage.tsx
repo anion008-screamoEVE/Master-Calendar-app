@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import type { UserRole } from '../types';
 import { Alert, Button, Field, Input } from '../components/ui';
 import { auth as fbAuth, isFirebaseConfigured } from '../lib/firebase';
+import { Link } from 'react-router-dom';
 import { Scissors, User } from 'lucide-react';
 
 type Mode = 'login' | 'register';
@@ -86,6 +87,8 @@ export function AuthPage() {
   const [loading, setLoading] = useState(false);
   const [tgLoading, setTgLoading] = useState(false);
   const [maxLoading, setMaxLoading] = useState(false);
+  const [acceptPrivacy, setAcceptPrivacy] = useState(false);
+  const [acceptTerms, setAcceptTerms] = useState(false);
   const [insideMax, setInsideMax] = useState(false);
 
   const botUsername = (import.meta.env.VITE_TELEGRAM_BOT_USERNAME || '').trim().replace(/^@/, '');
@@ -156,6 +159,9 @@ export function AuthPage() {
       setTgLoading(true);
       setError(null);
       try {
+        if (!acceptPrivacy || !acceptTerms) {
+          throw new Error('Сначала отметьте согласие с Политикой ПДн и Соглашением');
+        }
         const endpoint = import.meta.env.VITE_TELEGRAM_AUTH_URL || '/.netlify/functions/telegram-auth';
         await exchangeProviderToken(endpoint, { ...user, role });
       } catch (e) {
@@ -183,12 +189,15 @@ export function AuthPage() {
       window.onTelegramAuth = undefined;
       mount.innerHTML = '';
     };
-  }, [botUsername, role]);
+  }, [botUsername, role, acceptPrivacy, acceptTerms]);
 
   async function handleMaxLogin() {
     setError(null);
     setMaxLoading(true);
     try {
+      if (!acceptPrivacy || !acceptTerms) {
+        throw new Error('Сначала отметьте согласие с Политикой ПДн и Соглашением');
+      }
       // 1) If already inside MAX mini-app — use initData (optional path)
       const initData = window.WebApp?.initData || '';
       if (initData) {
@@ -274,6 +283,9 @@ export function AuthPage() {
     try {
       if (mode === 'login') await appAuth.signInEmail(email, password);
       else {
+        if (!acceptPrivacy || !acceptTerms) {
+          throw new Error('Примите Политику ПДн и Пользовательское соглашение');
+        }
         if (!displayName.trim()) throw new Error('Укажите имя');
         await appAuth.registerEmail(email, password, displayName.trim(), role);
       }
@@ -333,7 +345,31 @@ export function AuthPage() {
             <Field label="Пароль" hint="От 6 символов">
               <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} />
             </Field>
-            <Button type="submit" disabled={loading}>
+            <div className="consent-box">
+              <label className="consent-row">
+                <input type="checkbox" checked={acceptPrivacy} onChange={(e) => setAcceptPrivacy(e.target.checked)} />
+                <span>
+                  Согласен с{' '}
+                  <Link to="/privacy" target="_blank" rel="noreferrer">
+                    Политикой обработки персональных данных
+                  </Link>
+                </span>
+              </label>
+              <label className="consent-row">
+                <input type="checkbox" checked={acceptTerms} onChange={(e) => setAcceptTerms(e.target.checked)} />
+                <span>
+                  Принимаю{' '}
+                  <Link to="/terms" target="_blank" rel="noreferrer">
+                    Пользовательское соглашение
+                  </Link>
+                </span>
+              </label>
+              <p className="muted" style={{ fontSize: '0.72rem', margin: '6px 0 0' }}>
+                Нужно для регистрации и входа через Telegram/MAX. Для входа по email/паролю достаточно
+                ранее данного согласия; повторная отметка подтверждает актуальность.
+              </p>
+            </div>
+            <Button type="submit" disabled={loading || (mode === 'register' && (!acceptPrivacy || !acceptTerms))}>
               {loading ? '…' : mode === 'login' ? 'Войти' : 'Создать аккаунт'}
             </Button>
           </form>

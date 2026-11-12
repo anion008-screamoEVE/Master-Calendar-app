@@ -7,6 +7,7 @@ import { CalendarsPage } from './pages/CalendarsPage';
 import { SharePage } from './pages/SharePage';
 import { SubscriptionPage } from './pages/SubscriptionPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { PrivacyPage, TermsPage } from './pages/LegalPages';
 import { BottomNav } from './components/BottomNav';
 import { Spinner } from './components/ui';
 import { ThemeProvider } from './contexts/ThemeContext';
@@ -73,6 +74,8 @@ export default function App() {
               </PublicOnly>
             }
           />
+          <Route path="/privacy" element={<PrivacyPage />} />
+          <Route path="/terms" element={<TermsPage />} />
           <Route
             path="/complete-profile"
             element={

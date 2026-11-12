@@ -16,6 +16,12 @@ export function SubscriptionPage() {
     return (
       <div>
         <h1>Подписка</h1>
+      <p className="muted" style={{ fontSize: '0.85rem' }}>
+        Условия trial и оплаты — в{' '}
+        <a href="/terms" target="_blank" rel="noreferrer">Пользовательском соглашении</a>.
+        Платформа не оказывает бытовые услуги клиентам мастера.
+      </p>
+
         <Alert type="info">Подписка только для Мастера. Клиенты — бесплатно.</Alert>
       </div>
     );

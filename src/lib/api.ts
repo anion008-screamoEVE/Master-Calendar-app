@@ -186,6 +186,32 @@ export async function updateUserProfile(
   await updateDoc(doc(db, 'users', uid), patch);
 }
 
+
+/** Delete current user cloud data (calendars owned, appointments created, shares, profile). Auth user deleted on client. */
+export async function deleteUserAccountData(uid: string) {
+  // Owned calendars + their appointments
+  const owned = await getDocs(query(collection(db, 'calendars'), where('ownerId', '==', uid)));
+  for (const c of owned.docs) {
+    const apts = await getDocs(query(collection(db, 'appointments'), where('calendarId', '==', c.id)));
+    await Promise.all(apts.docs.map((d) => deleteDoc(d.ref)));
+    await deleteDoc(c.ref);
+  }
+  // Appointments created by user on others' calendars
+  const mineApts = await getDocs(query(collection(db, 'appointments'), where('createdBy', '==', uid)));
+  await Promise.all(mineApts.docs.map((d) => deleteDoc(d.ref)));
+  // Shares from user
+  try {
+    const sh = await getDocs(query(collection(db, 'shares'), where('fromUid', '==', uid)));
+    await Promise.all(sh.docs.map((d) => deleteDoc(d.ref)));
+  } catch { /* index may be missing — ignore */ }
+  // FCM tokens docs if any collection
+  try {
+    const tok = await getDocs(query(collection(db, 'fcmTokens'), where('uid', '==', uid)));
+    await Promise.all(tok.docs.map((d) => deleteDoc(d.ref)));
+  } catch { /* optional */ }
+  await deleteDoc(doc(db, 'users', uid));
+}
+
 export async function createCalendar(
   ownerId: string,
   data: { name: string; description?: string; color?: string; isPrimary?: boolean }

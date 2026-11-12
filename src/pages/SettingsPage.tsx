@@ -9,19 +9,22 @@ import { formatPhoneDisplay } from '../lib/phone';
 import { useTheme } from '../contexts/ThemeContext';
 
 export function SettingsPage() {
-  const { profile, firebaseUser, signOut, isMaster, refreshProfile } = useAuth();
+  const { profile, firebaseUser, signOut, isMaster, refreshProfile, deleteAccount } = useAuth();
   const push = usePush();
   const { theme, toggleTheme } = useTheme();
   const [name, setName] = useState(profile?.displayName || '');
   const [mins, setMins] = useState(String(profile?.notifyMinutesBefore ?? 60));
   const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   if (!profile || !firebaseUser) return null;
 
   async function save() {
     setSaving(true);
     setMsg(null);
+    setErr(null);
     try {
       await updateUserProfile(firebaseUser!.uid, {
         displayName: name.trim() || profile!.displayName,
@@ -29,6 +32,8 @@ export function SettingsPage() {
       });
       await refreshProfile();
       setMsg('Сохранено');
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Ошибка сохранения');
     } finally {
       setSaving(false);
     }
@@ -40,14 +45,39 @@ export function SettingsPage() {
     await refreshProfile();
   }
 
+  async function onDeleteAccount() {
+    const ok = confirm(
+      'Удалить аккаунт и связанные данные (ваши календари, созданные записи, профиль)? Это действие нельзя отменить.'
+    );
+    if (!ok) return;
+    const phrase = prompt('Введите УДАЛИТЬ заглавными буквами для подтверждения');
+    if (phrase !== 'УДАЛИТЬ') {
+      setErr('Удаление отменено');
+      return;
+    }
+    setDeleting(true);
+    setErr(null);
+    try {
+      await deleteAccount();
+      setMsg('Аккаунт удалён');
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Не удалось удалить аккаунт');
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
     <div>
       <h1>Настройки</h1>
+
       <div className="card">
         <div className="theme-toggle-row" style={{ marginBottom: 16 }}>
           <div className="theme-toggle-copy">
             <span className="theme-toggle-title">Оформление</span>
-            <span className="theme-toggle-subtitle">{theme === 'dark' ? 'Тёмная тема' : 'Светлая тема'}</span>
+            <span className="theme-toggle-subtitle">
+              {theme === 'dark' ? 'Тёмная тема' : 'Светлая тема'}
+            </span>
           </div>
           <Switch on={theme === 'light'} onToggle={toggleTheme} label="Переключить светлую тему" />
         </div>
@@ -79,21 +109,17 @@ export function SettingsPage() {
           </Select>
         </Field>
         {msg && <Alert type="success">{msg}</Alert>}
+        {err && <Alert type="error">{err}</Alert>}
         <Button onClick={save} disabled={saving}>
           Сохранить
         </Button>
       </div>
 
       <div className="card">
-        <h3>Push на смартфон</h3>
+        <h3>Уведомления</h3>
         <p className="muted" style={{ fontSize: '0.85rem' }}>
-          1) Откройте сайт в Chrome/Safari → «На экран Домой» (PWA).
-          <br />
-          2) Откройте приложение с иконки.
-          <br />
-          3) Нажмите «Включить push» и разрешите уведомления.
-          <br />
-          4) В Netlify должен быть VITE_FIREBASE_VAPID_KEY; Functions задеплоены.
+          Напоминания о ваших записях — сервисные. Можно отключить в любой момент. Рекламные
+          рассылки без отдельного согласия не отправляются.
         </p>
         <div className="list-item">
           <div style={{ flex: 1 }}>
@@ -122,6 +148,32 @@ export function SettingsPage() {
           }}
         >
           Включить push-уведомления
+        </Button>
+      </div>
+
+      <div className="card">
+        <h3>Документы и ПДн</h3>
+        <p className="muted" style={{ fontSize: '0.85rem' }}>
+          Сервис — инструмент учёта для мастера. Услуги клиентам оказывает мастер, а не платформа.
+        </p>
+        <div className="btn-row" style={{ flexDirection: 'column' }}>
+          <Link to="/privacy" className="btn btn-secondary" style={{ textAlign: 'center' }}>
+            Политика персональных данных
+          </Link>
+          <Link to="/terms" className="btn btn-secondary" style={{ textAlign: 'center' }}>
+            Пользовательское соглашение
+          </Link>
+        </div>
+      </div>
+
+      <div className="card">
+        <h3>Удаление данных</h3>
+        <p className="muted" style={{ fontSize: '0.85rem' }}>
+          Удаляются профиль, принадлежащие вам календари и созданные вами записи. Данные, которые
+          другие мастера внесли у себя, не затрагиваются.
+        </p>
+        <Button variant="danger" disabled={deleting} onClick={onDeleteAccount}>
+          {deleting ? 'Удаление…' : 'Удалить аккаунт и данные'}
         </Button>
       </div>
 
